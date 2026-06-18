@@ -644,6 +644,257 @@ def resource_efficiency_analysis(data: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def value_score(value: float, warning: float, critical: float, higher_is_worse: bool = True) -> int:
+    if pd.isna(value):
+        return 0
+    if higher_is_worse:
+        if value >= critical:
+            return 2
+        if value >= warning:
+            return 1
+    else:
+        if value <= critical:
+            return 2
+        if value <= warning:
+            return 1
+    return 0
+
+
+def score_to_level(score: int) -> str:
+    if score >= 7:
+        return "高风险"
+    if score >= 3:
+        return "中风险"
+    return "低风险"
+
+
+def scene_decision_analysis(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    slope_threshold: float,
+) -> pd.DataFrame:
+    alerts = alert_continuity_summary(data, thresholds, metrics)
+    leaks = leak_analysis(data, slope_threshold)
+    efficiency = resource_efficiency_analysis(data)
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        reasons = []
+        score = 0
+
+        scene_alerts = alerts[(alerts["数据源"] == source) & (alerts["场景"] == scene)] if not alerts.empty else pd.DataFrame()
+        if not scene_alerts.empty:
+            max_alert_ratio = float(scene_alerts["超阈占比(%)"].max())
+            max_alert_minutes = float(scene_alerts["最大连续超阈(分钟)"].max())
+            score += value_score(max_alert_ratio, 5, 20)
+            score += value_score(max_alert_minutes, 1, 5)
+            if max_alert_ratio >= 5:
+                reasons.append(f"超阈占比最高 {max_alert_ratio:.1f}%")
+            if max_alert_minutes >= 1:
+                reasons.append(f"最长连续超阈 {format_duration(max_alert_minutes)}")
+        else:
+            max_alert_ratio = 0.0
+            max_alert_minutes = 0.0
+
+        leak_row = leaks[(leaks["数据源"] == source) & (leaks["场景"] == scene)] if not leaks.empty else pd.DataFrame()
+        leak_result = leak_row["判断"].iloc[0] if not leak_row.empty else "数据不足"
+        if leak_result == "疑似泄漏":
+            score += 3
+            reasons.append("疑似内存泄漏")
+        elif leak_result == "轻微增长":
+            score += 1
+
+        efficiency_row = efficiency[(efficiency["数据源"] == source) & (efficiency["场景"] == scene)] if not efficiency.empty else pd.DataFrame()
+        failure_rate = efficiency_row["失败率(%)"].iloc[0] if not efficiency_row.empty else np.nan
+        error_per_thousand = efficiency_row["每千请求错误数"].iloc[0] if not efficiency_row.empty else np.nan
+        response_p95 = efficiency_row["响应时间P95(ms)"].iloc[0] if not efficiency_row.empty else np.nan
+        fps_p95 = efficiency_row["FPS P95"].iloc[0] if not efficiency_row.empty else np.nan
+
+        score += value_score(failure_rate, 0.1, 1.0)
+        score += value_score(error_per_thousand, 1.0, 10.0)
+        score += value_score(response_p95, 500, 1000)
+        score += value_score(fps_p95, 45, 30, higher_is_worse=False)
+        if not pd.isna(failure_rate) and failure_rate >= 0.1:
+            reasons.append(f"失败率 {failure_rate:.2f}%")
+        if not pd.isna(response_p95) and response_p95 >= 500:
+            reasons.append(f"响应时间P95 {response_p95:.0f}ms")
+        if not pd.isna(fps_p95) and fps_p95 <= 45:
+            reasons.append(f"FPS P95 {fps_p95:.1f}")
+
+        rows.append(
+            {
+                "数据源": source,
+                "场景": scene,
+                "风险评分": score,
+                "风险等级": score_to_level(score),
+                "最大超阈占比(%)": max_alert_ratio,
+                "最长连续超阈": format_duration(max_alert_minutes),
+                "内存趋势": leak_result,
+                "失败率(%)": failure_rate,
+                "响应时间P95(ms)": response_p95,
+                "FPS P95": fps_p95,
+                "主要原因": "；".join(reasons) if reasons else "未见明显风险",
+            }
+        )
+    return pd.DataFrame(rows).sort_values("风险评分", ascending=False) if rows else pd.DataFrame()
+
+
+def release_gate_analysis(
+    decisions: pd.DataFrame,
+    max_allowed_level: str,
+    fail_on_leak: bool,
+    fail_on_any_alert: bool,
+    fail_on_errors: bool,
+) -> tuple[str, pd.DataFrame]:
+    if decisions.empty:
+        return "数据不足", pd.DataFrame()
+
+    level_rank = {"低风险": 1, "中风险": 2, "高风险": 3}
+    allowed_rank = level_rank[max_allowed_level]
+    rows = []
+
+    risky = decisions[decisions["风险等级"].map(level_rank).fillna(0) > allowed_rank]
+    rows.append(
+        {
+            "规则": f"场景风险等级不高于{max_allowed_level}",
+            "结果": "失败" if not risky.empty else "通过",
+            "详情": "、".join(risky["场景"].astype(str).unique()) if not risky.empty else "全部场景满足",
+        }
+    )
+
+    if fail_on_leak:
+        leaks = decisions[decisions["内存趋势"] == "疑似泄漏"]
+        rows.append(
+            {
+                "规则": "不允许疑似内存泄漏",
+                "结果": "失败" if not leaks.empty else "通过",
+                "详情": "、".join(leaks["场景"].astype(str).unique()) if not leaks.empty else "未发现疑似泄漏",
+            }
+        )
+
+    if fail_on_any_alert:
+        alerts = decisions[decisions["最大超阈占比(%)"] > 0]
+        rows.append(
+            {
+                "规则": "不允许超阈采样点",
+                "结果": "失败" if not alerts.empty else "通过",
+                "详情": "、".join(alerts["场景"].astype(str).unique()) if not alerts.empty else "未发现超阈",
+            }
+        )
+
+    if fail_on_errors:
+        errors = decisions[decisions["失败率(%)"].fillna(0) > 0]
+        rows.append(
+            {
+                "规则": "不允许请求失败",
+                "结果": "失败" if not errors.empty else "通过",
+                "详情": "、".join(errors["场景"].astype(str).unique()) if not errors.empty else "未发现失败请求",
+            }
+        )
+
+    result = pd.DataFrame(rows)
+    status = "不通过" if (result["结果"] == "失败").any() else "通过"
+    return status, result
+
+
+def capacity_estimation(
+    data: pd.DataFrame,
+    test_cpu_cores: int,
+    target_cpu_utilization: float,
+    target_throughputs: list[float],
+    system_reserved_memory_gb: float,
+) -> pd.DataFrame:
+    efficiency = resource_efficiency_analysis(data)
+    if efficiency.empty:
+        return pd.DataFrame()
+
+    cpu_cost = efficiency["CPU P95/吞吐"].replace([np.inf, -np.inf], np.nan).dropna()
+    memory_cost = efficiency["内存峰值/并发(MB)"].replace([np.inf, -np.inf], np.nan).dropna()
+    concurrency_per_throughput = safe_ratio(efficiency["平均并发"].sum(), efficiency["平均吞吐"].sum())
+    cpu_cost_p95 = percentile_95(cpu_cost) if not cpu_cost.empty else np.nan
+    memory_cost_p95 = percentile_95(memory_cost) if not memory_cost.empty else np.nan
+    target_ratio = target_cpu_utilization / 100
+
+    rows = []
+    for throughput in target_throughputs:
+        target_concurrency = throughput * concurrency_per_throughput if not pd.isna(concurrency_per_throughput) else np.nan
+        cpu_percent_needed = cpu_cost_p95 * throughput if not pd.isna(cpu_cost_p95) else np.nan
+        raw_cores = test_cpu_cores * (cpu_percent_needed / 100) / target_ratio if target_ratio and not pd.isna(cpu_percent_needed) else np.nan
+        memory_gb = (memory_cost_p95 * target_concurrency / 1024 + system_reserved_memory_gb) if not pd.isna(memory_cost_p95) and not pd.isna(target_concurrency) else np.nan
+        rows.append(
+            {
+                "目标吞吐": throughput,
+                "估算并发": target_concurrency,
+                "CPU需求(核)": raw_cores,
+                "建议CPU核数": round_up_to_common_cores(raw_cores),
+                "内存需求(GB)": memory_gb,
+                "建议内存": f"{round_up_memory_gb(memory_gb)}GB" if not pd.isna(memory_gb) else "-",
+                "估算依据": "按当前数据的 P95 单位资源成本线性外推",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def stability_score_analysis(decisions: pd.DataFrame) -> pd.DataFrame:
+    if decisions.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, row in decisions.iterrows():
+        score = max(0, 100 - row["风险评分"] * 10)
+        rows.append(
+            {
+                "数据源": row["数据源"],
+                "场景": row["场景"],
+                "稳定性评分": score,
+                "等级": "优秀" if score >= 85 else "可接受" if score >= 70 else "需关注" if score >= 50 else "高风险",
+                "扣分原因": row["主要原因"],
+            }
+        )
+    return pd.DataFrame(rows).sort_values("稳定性评分")
+
+
+def bottleneck_hints(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> pd.DataFrame:
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        hints = []
+        cpu_p95 = percentile_95(group["cpu_percent"]) if "cpu_percent" in group else np.nan
+        memory_p95 = percentile_95(group["memory_percent"]) if "memory_percent" in group else np.nan
+        io_p95 = percentile_95(group["io"]) if "io" in group else np.nan
+        response_p95 = percentile_95(group["response_time_ms"]) if "response_time_ms" in group else np.nan
+        failure_rate = np.nan
+        if "failed_requests" in group and "request_count" in group:
+            failure_rate = safe_ratio(group["failed_requests"].sum(), group["request_count"].sum()) * 100
+
+        if not pd.isna(cpu_p95) and cpu_p95 >= thresholds.get("cpu_percent", 80) * 0.9:
+            hints.append("CPU压力")
+        if not pd.isna(memory_p95) and memory_p95 >= thresholds.get("memory_percent", 70) * 0.9:
+            hints.append("内存压力")
+        if not pd.isna(io_p95) and io_p95 >= thresholds.get("io", 8) * 0.9:
+            hints.append("IO压力")
+        if ("network_up_kbps" in group or "network_down_kbps" in group) and not pd.isna(response_p95) and response_p95 >= 500:
+            network_total = (group["network_up_kbps"].mean() if "network_up_kbps" in group else 0) + (group["network_down_kbps"].mean() if "network_down_kbps" in group else 0)
+            if network_total > 1024:
+                hints.append("网络压力")
+        if not pd.isna(failure_rate) and failure_rate > 0:
+            hints.append("业务错误/重试")
+        if not pd.isna(response_p95) and response_p95 >= 500 and not hints:
+            hints.append("响应慢但资源瓶颈不明显")
+
+        rows.append(
+            {
+                "数据源": source,
+                "场景": scene,
+                "瓶颈提示": "、".join(hints) if hints else "未见明显瓶颈",
+                "CPU P95": cpu_p95,
+                "内存占比P95": memory_p95,
+                "IO P95": io_p95,
+                "响应时间P95(ms)": response_p95,
+                "失败率(%)": failure_rate,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def round_up_to_common_cores(value: float) -> int:
     if pd.isna(value) or value <= 1:
         return 1
@@ -795,6 +1046,16 @@ def build_report_markdown(
     trends = trend_analysis(data, metrics)
     alert_summary = alert_continuity_summary(data, thresholds, metrics)
     efficiency = resource_efficiency_analysis(data)
+    decisions = scene_decision_analysis(data, thresholds, metrics, slope_threshold)
+    gate_status, gate_rules = release_gate_analysis(
+        decisions,
+        max_allowed_level="中风险",
+        fail_on_leak=True,
+        fail_on_any_alert=False,
+        fail_on_errors=False,
+    )
+    stability = stability_score_analysis(decisions)
+    bottlenecks = bottleneck_hints(data, thresholds, metrics)
     conclusions = build_conclusions(data, thresholds, slope_threshold, metrics)
     lines = [
         "# 应用资源消耗分析报告",
@@ -802,6 +1063,23 @@ def build_report_markdown(
         "## 测试结论",
         "",
         *[f"- {item}" for item in conclusions],
+        f"- 发布门禁默认判断：{gate_status}。",
+        "",
+        "## 决策分析",
+        "",
+        dataframe_to_markdown(decisions) if not decisions.empty else "无场景风险评级数据。",
+        "",
+        "## 发布门禁",
+        "",
+        dataframe_to_markdown(gate_rules) if not gate_rules.empty else "无发布门禁数据。",
+        "",
+        "## 稳定性评分",
+        "",
+        dataframe_to_markdown(stability) if not stability.empty else "无稳定性评分数据。",
+        "",
+        "## 瓶颈提示",
+        "",
+        dataframe_to_markdown(bottlenecks) if not bottlenecks.empty else "无瓶颈提示数据。",
         "",
         "## 汇总数据",
         "",
@@ -840,6 +1118,8 @@ def build_report_markdown(
         "- 标准差 / IQR / 变异系数：用于观察资源波动性",
         "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟",
         "- 资源效率：把 CPU、内存、IO、网络、磁盘等资源消耗按吞吐或并发归一化",
+        "- 风险评分：综合超阈、连续超阈、泄漏、失败率、响应时间、FPS 等规则扣分",
+        "- 发布门禁：按风险等级、泄漏、超阈、失败请求等规则判断是否通过",
         "- 内存斜率：按时间对内存占用做线性回归，单位 MB/分钟",
     ]
     return "\n".join(lines)
@@ -922,6 +1202,10 @@ def with_display_label(data: pd.DataFrame) -> pd.DataFrame:
 
 def render_trend(data: pd.DataFrame, selected_scenes: list[str], selected_metrics: list[str], thresholds: dict[str, float], metrics: list[Metric]) -> None:
     st.subheader("趋势分析")
+    with st.expander("口径说明", expanded=False):
+        st.write("- 趋势图按采样时间绘制，适合观察尖峰、持续高水位和随时间爬升。")
+        st.write("- 红色虚线是侧边栏配置的告警阈值。")
+        st.write("- 多数据源上传时，同名场景会按“数据源 / 场景”区分。")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     if filtered.empty:
         st.warning("当前筛选条件下没有数据。")
@@ -977,13 +1261,18 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
         st.info("没有可用于对比的数值指标。")
         return
 
-    metric_label = st.selectbox("对比指标", sorted(compare["指标"].unique()))
+    metric_label = st.selectbox(
+        "对比指标",
+        sorted(compare["指标"].unique()),
+        help="选择要横向比较的指标。核心指标和 Excel 中识别出的语义化/动态指标都会出现在这里。",
+    )
     stat = st.radio(
         "统计口径",
         ["均值", "峰值", "P90", "P95", "P99", "标准差", "IQR", "变异系数", "趋势斜率"],
         index=3,
         horizontal=True,
         key="comparison_stat",
+        help="均值看整体水平，P95/P99 看高水位和尾部风险，标准差/IQR/变异系数看波动，趋势斜率看是否随时间上升或下降。",
     )
     chart_data = compare[(compare["指标"] == metric_label) & (compare["统计"] == stat)]
     fig = px.bar(chart_data, x="场景", y="值", color="场景", title=f"{metric_label}{stat}对比")
@@ -993,13 +1282,21 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
 
 def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
     st.subheader("分布与相关性")
+    with st.expander("口径说明", expanded=False):
+        st.write("- 箱线图适合观察指标分布、中位数、离群点和波动范围。")
+        st.write("- 相关性热力图只表示线性相关，不代表因果关系。")
     filtered = with_display_label(data[data["scene"].isin(selected_scenes)].copy())
     available = [metric for metric in metrics if metric.key in filtered and not filtered[metric.key].dropna().empty]
     if not available:
         st.info("没有可用于分布分析的指标。")
         return
 
-    metric = st.selectbox("分布指标", available, format_func=lambda item: item.label)
+    metric = st.selectbox(
+        "分布指标",
+        available,
+        format_func=lambda item: item.label,
+        help="箱线图用于观察该指标在不同场景中的分布、离群点和波动范围。",
+    )
     fig = px.box(
         filtered,
         x="display_scene",
@@ -1034,6 +1331,10 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
 
 def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
     st.subheader("资源效率")
+    with st.expander("口径说明", expanded=False):
+        st.write("- 效率分析会优先用 QPS、TPS、任务数或请求数作为吞吐口径。")
+        st.write("- CPU P95/吞吐越低，表示单位吞吐 CPU 成本越低。")
+        st.write("- 内存峰值/并发越低，表示单位并发内存成本越低。")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     if filtered.empty:
         st.warning("当前筛选条件下没有数据。")
@@ -1060,7 +1361,11 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
         st.info("当前数据缺少吞吐、并发、请求数等字段，无法绘制效率指标。")
         return
 
-    metric_column = st.selectbox("效率指标", available)
+    metric_column = st.selectbox(
+        "效率指标",
+        available,
+        help="效率指标会把资源消耗归一化到吞吐或并发口径，更适合判断资源上涨是否真的退化。",
+    )
     chart_data = efficiency.copy()
     chart_data["场景标识"] = chart_data["数据源"].astype(str) + " / " + chart_data["场景"].astype(str)
     fig = px.bar(chart_data, x="场景标识", y=metric_column, color="数据源", title=f"{metric_column} 对比")
@@ -1068,8 +1373,102 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric], slope_threshold: float) -> None:
+    st.subheader("决策分析")
+    filtered = data[data["scene"].isin(selected_scenes)].copy()
+    if filtered.empty:
+        st.warning("当前筛选条件下没有数据。")
+        return
+
+    with st.expander("口径说明", expanded=False):
+        st.write("- 场景风险评级会综合超阈占比、最长连续超阈、内存趋势、失败率、响应时间和 FPS 等规则。")
+        st.write("- 发布门禁用于把风险评级转换成通过/不通过，适合发版检查或测试准入。")
+        st.write("- 容量估算是基于当前样本的单位资源成本做线性外推，正式配置结论仍需要目标机器实测。")
+
+    decisions = scene_decision_analysis(filtered, thresholds, metrics, slope_threshold)
+    st.markdown("**场景风险评级**")
+    if decisions.empty:
+        st.info("没有可用于风险评级的数据。")
+        return
+    st.dataframe(decisions, use_container_width=True, hide_index=True)
+
+    st.markdown("**发布门禁**")
+    col1, col2, col3, col4 = st.columns(4)
+    max_allowed_level = col1.selectbox(
+        "允许最高风险等级",
+        ["低风险", "中风险", "高风险"],
+        index=1,
+        help="如果某个场景的风险等级高于这里选择的等级，发布门禁会判定失败。",
+    )
+    fail_on_leak = col2.checkbox(
+        "疑似泄漏即失败",
+        value=True,
+        help="勾选后，只要任意场景被内存趋势检测标记为疑似泄漏，发布门禁就失败。",
+    )
+    fail_on_any_alert = col3.checkbox(
+        "任意超阈即失败",
+        value=False,
+        help="勾选后，只要任意指标出现过超阈采样点，发布门禁就失败。适合严格准入场景。",
+    )
+    fail_on_errors = col4.checkbox(
+        "请求失败即失败",
+        value=False,
+        help="勾选后，只要请求失败率大于 0，发布门禁就失败。需要 Excel 中有请求数和失败请求数字段。",
+    )
+    gate_status, gate_rules = release_gate_analysis(decisions, max_allowed_level, fail_on_leak, fail_on_any_alert, fail_on_errors)
+    st.metric("发布门禁", gate_status)
+    st.dataframe(gate_rules, use_container_width=True, hide_index=True)
+
+    st.markdown("**稳定性评分**")
+    stability = stability_score_analysis(decisions)
+    st.dataframe(stability, use_container_width=True, hide_index=True)
+
+    st.markdown("**瓶颈提示**")
+    bottlenecks = bottleneck_hints(filtered, thresholds, metrics)
+    st.dataframe(bottlenecks, use_container_width=True, hide_index=True)
+
+    st.markdown("**容量估算**")
+    col5, col6, col7 = st.columns(3)
+    test_cpu_cores = col5.number_input(
+        "容量估算测试机CPU核数",
+        min_value=1,
+        value=8,
+        step=1,
+        help="采集这批性能数据时测试机的逻辑 CPU 核数，用于把 CPU% 换算成核心需求。",
+    )
+    target_cpu_utilization = col6.number_input(
+        "容量估算目标CPU上限(%)",
+        min_value=30.0,
+        max_value=95.0,
+        value=70.0,
+        step=5.0,
+        help="希望目标机器长期运行时 CPU 不超过的利用率。值越低，估算出的 CPU 核数越保守。",
+    )
+    reserved_memory = col7.number_input(
+        "容量估算系统预留内存(GB)",
+        min_value=0.0,
+        value=2.0,
+        step=0.5,
+        help="为操作系统、后台进程和运行时预留的内存，会叠加到应用内存需求上。",
+    )
+    throughput_text = st.text_input("目标吞吐列表", value="50,100,200", help="多个目标吞吐用英文逗号分隔，口径沿用效率页自动识别的 QPS/TPS/任务数/请求数。")
+    try:
+        targets = [float(item.strip()) for item in throughput_text.split(",") if item.strip()]
+    except ValueError:
+        st.warning("目标吞吐列表需要是数字，并用英文逗号分隔。")
+        targets = []
+    capacity = capacity_estimation(filtered, int(test_cpu_cores), float(target_cpu_utilization), targets, float(reserved_memory))
+    if capacity.empty:
+        st.info("缺少吞吐或并发字段，无法做容量估算。")
+    else:
+        st.dataframe(capacity, use_container_width=True, hide_index=True)
+
+
 def render_alerts(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric]) -> None:
     st.subheader("异常点")
+    with st.expander("口径说明", expanded=False):
+        st.write("- 异常点由侧边栏阈值和告警方向决定。")
+        st.write("- 对“越高越差”的指标，值大于阈值算异常；对“越低越差”的指标，值小于阈值算异常。")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     alert_frames = []
     for metric in metrics:
@@ -1112,7 +1511,11 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
         return
 
     stats = with_display_label(stats) if "source" in stats.columns else stats.assign(display_scene=stats["scene"])
-    baseline = st.selectbox("基准场景", list(stats["display_scene"]))
+    baseline = st.selectbox(
+        "基准场景",
+        list(stats["display_scene"]),
+        help="选择一个场景作为对照组，其他场景会计算相对它的增长率。",
+    )
     stat_labels = {
         "mean": "均值",
         "max": "峰值",
@@ -1131,6 +1534,7 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
         format_func=stat_labels.get,
         horizontal=True,
         key="baseline_growth_stat",
+        help="选择用于计算增长率的统计口径。P95/P99 更适合观察高水位退化，均值更适合观察整体负载变化。",
     )
     baseline_row = stats[stats["display_scene"] == baseline].iloc[0]
     rows = []
@@ -1153,7 +1557,11 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
     result = pd.DataFrame(rows)
     st.dataframe(result, use_container_width=True, hide_index=True)
 
-    metric_label = st.selectbox("增长率图表指标", [metric.label for metric in metrics])
+    metric_label = st.selectbox(
+        "增长率图表指标",
+        [metric.label for metric in metrics],
+        help="选择要绘制增长率柱状图的指标。",
+    )
     chart_data = result[result["指标"] == metric_label]
     fig = px.bar(chart_data, x="场景", y="相对增长率(%)", color="场景", title=f"{metric_label}相对 {baseline} 的增长率")
     fig.add_hline(y=0, line_color="#666", line_width=1)
@@ -1163,6 +1571,10 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
 
 def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_threshold: float, metrics: list[Metric]) -> None:
     st.subheader("内存泄漏与趋势风险")
+    with st.expander("口径说明", expanded=False):
+        st.write("- 内存泄漏检测使用内存占用对运行分钟数做线性回归。")
+        st.write("- 趋势斜率表示每分钟增长多少指标值，R2 表示线性趋势拟合程度。")
+        st.write("- 这是快速筛查，不替代代码级泄漏定位。")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     if filtered.empty:
         st.warning("当前筛选条件下没有数据。")
@@ -1194,7 +1606,12 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         st.info("上传两个或更多 Excel 文件后，可在这里按数据源对比不同版本。")
         return
     stats = metric_stats(filtered, ["source", "scene"], metrics)
-    metric = st.selectbox("版本对比指标", metrics, format_func=lambda item: item.label)
+    metric = st.selectbox(
+        "版本对比指标",
+        metrics,
+        format_func=lambda item: item.label,
+        help="选择要在不同 Excel 文件之间对比的指标。上传文件名会作为版本/批次标识。",
+    )
     stat_labels = {
         "mean": "均值",
         "max": "峰值",
@@ -1213,14 +1630,25 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         format_func=stat_labels.get,
         horizontal=True,
         key="version_compare_stat",
+        help="选择版本对比使用的统计口径。P95/P99 适合高水位，峰值适合极端风险，趋势斜率适合观察随时间爬升。",
     )
     column = f"{metric.key}_{stat_name}"
     if column not in stats:
         st.info("当前指标没有可对比数据。")
         return
     sources = list(stats["source"].dropna().unique())
-    baseline_source = st.selectbox("基准数据源", sources)
-    regression_threshold = st.number_input("退化判定阈值(%)", min_value=0.0, value=15.0, step=5.0)
+    baseline_source = st.selectbox(
+        "基准数据源",
+        sources,
+        help="选择作为基准版本或基准批次的数据源。其他数据源会和它逐场景比较。",
+    )
+    regression_threshold = st.number_input(
+        "退化判定阈值(%)",
+        min_value=0.0,
+        value=15.0,
+        step=5.0,
+        help="相对基准的变化超过该比例时标记为退化。对于 FPS、QPS 等越低越差的指标，会按下降幅度判断。",
+    )
 
     pivot = stats.pivot(index="scene", columns="source", values=column).reset_index()
     st.dataframe(pivot, use_container_width=True, hide_index=True)
@@ -1258,16 +1686,60 @@ def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: flo
     st.caption("该结论基于当前筛选数据推导，适合做初步配置建议；正式发布最低配置前，仍建议在目标低配机器上实测验证。")
 
     col1, col2, col3 = st.columns(3)
-    test_cpu_cores = col1.number_input("测试机CPU核数", min_value=1, value=8, step=1)
-    target_cpu_utilization = col2.number_input("目标CPU利用率上限(%)", min_value=30.0, max_value=95.0, value=70.0, step=5.0)
-    minimum_cpu_cores = col3.number_input("最低CPU核数下限", min_value=1, value=2, step=1)
+    test_cpu_cores = col1.number_input(
+        "测试机CPU核数",
+        min_value=1,
+        value=8,
+        step=1,
+        help="采集性能数据时测试机的逻辑 CPU 核数，用于把 CPU P95 换算成目标机器核心需求。",
+    )
+    target_cpu_utilization = col2.number_input(
+        "目标CPU利用率上限(%)",
+        min_value=30.0,
+        max_value=95.0,
+        value=70.0,
+        step=5.0,
+        help="希望目标机器长期运行时 CPU 不超过的利用率。通常 70% 是比较通用的保守值。",
+    )
+    minimum_cpu_cores = col3.number_input(
+        "最低CPU核数下限",
+        min_value=1,
+        value=2,
+        step=1,
+        help="无论公式估算结果多低，最低配置都不会低于这个核数。",
+    )
 
     col4, col5, col6 = st.columns(3)
-    system_reserved_memory_gb = col4.number_input("系统和后台预留内存(GB)", min_value=0.0, value=2.0, step=0.5)
-    minimum_memory_gb = col5.number_input("最低内存下限(GB)", min_value=1, value=4, step=1)
-    minimum_free_disk_gb = col6.number_input("最低磁盘剩余空间(GB)", min_value=1, value=10, step=1)
+    system_reserved_memory_gb = col4.number_input(
+        "系统和后台预留内存(GB)",
+        min_value=0.0,
+        value=2.0,
+        step=0.5,
+        help="为操作系统、后台服务、运行时和缓存预留的内存，会叠加到应用内存峰值上。",
+    )
+    minimum_memory_gb = col5.number_input(
+        "最低内存下限(GB)",
+        min_value=1,
+        value=4,
+        step=1,
+        help="无论公式估算结果多低，最低配置都不会低于这个内存容量。",
+    )
+    minimum_free_disk_gb = col6.number_input(
+        "最低磁盘剩余空间(GB)",
+        min_value=1,
+        value=10,
+        step=1,
+        help="给安装包、日志、缓存、临时文件和运行数据预留的最低剩余磁盘空间。",
+    )
 
-    recommendation_factor = st.slider("推荐配置安全系数", min_value=1.0, max_value=2.5, value=1.5, step=0.1)
+    recommendation_factor = st.slider(
+        "推荐配置安全系数",
+        min_value=1.0,
+        max_value=2.5,
+        value=1.5,
+        step=0.1,
+        help="推荐配置会在最低配置基础上乘以该系数。系数越高，余量越大。",
+    )
     config_table, notes = configuration_recommendation(
         data,
         int(test_cpu_cores),
@@ -1336,7 +1808,12 @@ def main() -> None:
 
     with st.sidebar:
         st.header("数据源")
-        uploaded_files = st.file_uploader("上传 Excel 文件", type=["xlsx", "xls"], accept_multiple_files=True)
+        uploaded_files = st.file_uploader(
+            "上传 Excel 文件",
+            type=["xlsx", "xls"],
+            accept_multiple_files=True,
+            help="可以一次上传多个 Excel。文件名会作为数据源名称，用于版本对比和多批次对比。",
+        )
         use_sample = not uploaded_files
         if use_sample:
             ensure_sample_file()
@@ -1349,15 +1826,32 @@ def main() -> None:
             st.caption("多个别名用英文逗号分隔。系统会先匹配这里配置的字段名，再使用内置规则自动识别。")
             field_aliases = {
                 field: parse_aliases(
-                    st.text_input(label, value="", placeholder="例如：字段A,字段B")
+                    st.text_input(
+                        label,
+                        value="",
+                        placeholder="例如：字段A,字段B",
+                        help=f"如果采集工具导出的 {label} 表头无法被自动识别，可以在这里填写额外别名，多个别名用英文逗号分隔。",
+                    )
                 )
                 for field, (label, _) in MAPPING_FIELDS.items()
             }
 
-        slope_threshold = st.number_input("内存疑似泄漏斜率阈值(MB/分钟)", min_value=0.0, value=2.0, step=0.5)
+        slope_threshold = st.number_input(
+            "内存疑似泄漏斜率阈值(MB/分钟)",
+            min_value=0.0,
+            value=2.0,
+            step=0.5,
+            help="内存线性增长斜率达到该值，并且趋势较明显时，会标记为疑似泄漏。",
+        )
 
         st.header("稳定区间")
-        warmup_minutes = st.number_input("排除每个场景前 N 分钟", min_value=0.0, value=0.0, step=0.5)
+        warmup_minutes = st.number_input(
+            "排除每个场景前 N 分钟",
+            min_value=0.0,
+            value=0.0,
+            step=0.5,
+            help="用于排除启动预热、缓存加载等早期尖峰。裁剪会按数据源 + 场景分别计算，不修改原始 Excel。",
+        )
 
     if use_sample:
         files = (("示例数据", None),)
@@ -1387,6 +1881,7 @@ def main() -> None:
                 ["越高越差", "越低越差"],
                 index=0 if metric.higher_is_worse else 1,
                 key=f"direction_{metric.key}",
+                help="例如 CPU、内存、响应时间通常越高越差；FPS、成功率、QPS 在某些场景下可能越低越差。",
             )
             configured_metric = replace(metric, higher_is_worse=direction == "越高越差")
             configured_metrics.append(configured_metric)
@@ -1396,18 +1891,30 @@ def main() -> None:
                 value=float(configured_metric.default_threshold),
                 step=1.0,
                 key=f"threshold_{metric.key}",
+                help="用于异常点、超阈次数、超阈占比、最大连续超阈和趋势图阈值线。不会修改原始数据。",
             )
         metrics = configured_metrics
 
         st.header("筛选")
-        selected_sources = st.multiselect("数据源", sources, default=sources)
-        selected_scenes = st.multiselect("场景", scenes, default=scenes)
+        selected_sources = st.multiselect(
+            "数据源",
+            sources,
+            default=sources,
+            help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
+        )
+        selected_scenes = st.multiselect(
+            "场景",
+            scenes,
+            default=scenes,
+            help="选择要参与分析的测试场景。场景名来自 Excel 的 sheet 名。",
+        )
         available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
         selected_metrics = st.multiselect(
             "趋势指标",
             [metric.key for metric in available_metrics],
             default=[metric.key for metric in available_metrics[:3]],
             format_func=lambda key: metric_by_key(metrics, key).label,
+            help="选择趋势页要绘制的指标。这里不影响概览、报告和其他统计表。",
         )
 
     filtered_data = data[data["source"].isin(selected_sources) & data["scene"].isin(selected_scenes)].copy()
@@ -1418,7 +1925,7 @@ def main() -> None:
     config_table = pd.DataFrame()
     config_notes: list[str] = []
 
-    tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "分布", "异常", "报告", "系统信息", "原始数据"])
+    tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "决策", "分布", "异常", "报告", "系统信息", "原始数据"])
     with tabs[0]:
         render_overview(filtered_data, thresholds, metrics)
     with tabs[1]:
@@ -1436,10 +1943,12 @@ def main() -> None:
     with tabs[7]:
         render_efficiency(filtered_data, selected_scenes)
     with tabs[8]:
-        render_distribution(filtered_data, selected_scenes, metrics)
+        render_decision(filtered_data, selected_scenes, thresholds, metrics, slope_threshold)
     with tabs[9]:
-        render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+        render_distribution(filtered_data, selected_scenes, metrics)
     with tabs[10]:
+        render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+    with tabs[11]:
         if config_table.empty:
             config_table, config_notes = configuration_recommendation(
                 filtered_data,
@@ -1453,10 +1962,10 @@ def main() -> None:
                 slope_threshold=slope_threshold,
             )
         render_report(filtered_data, thresholds, slope_threshold, metrics, config_table, config_notes)
-    with tabs[11]:
+    with tabs[12]:
         selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
         render_system_info(selected_system)
-    with tabs[12]:
+    with tabs[13]:
         filtered = filtered_data.copy()
         st.dataframe(filtered, use_container_width=True, hide_index=True)
         st.download_button(
