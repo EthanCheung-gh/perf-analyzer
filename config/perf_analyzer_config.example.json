@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "fields": {
+    "cpu_percent": [
+      "CPU使用率",
+      "Process CPU"
+    ],
+    "memory_mb": [
+      "RSS(MB)",
+      "Working Set"
+    ],
+    "response_time_ms": [
+      "P95响应时间",
+      "latency_ms"
+    ],
+    "network_down_kbps": [
+      "下行流量",
+      "rx_kbps"
+    ]
+  },
+  "analysis": {
+    "memory_leak_slope_threshold": 2.0,
+    "warmup_minutes": 1.0
+  },
+  "metrics": {
+    "cpu_percent": {
+      "label": "CPU",
+      "threshold": 80,
+      "direction": "higher"
+    },
+    "memory_mb": {
+      "label": "内存占用",
+      "threshold": 2048,
+      "direction": "higher"
+    },
+    "memory_percent": {
+      "label": "内存占比",
+      "threshold": 70,
+      "direction": "higher"
+    },
+    "threads": {
+      "label": "线程",
+      "threshold": 120,
+      "direction": "higher"
+    },
+    "handles": {
+      "label": "句柄",
+      "threshold": 1500,
+      "direction": "higher"
+    },
+    "io": {
+      "label": "IO",
+      "threshold": 8,
+      "direction": "higher"
+    },
+    "qps": {
+      "label": "QPS",
+      "threshold": 10,
+      "direction": "lower"
+    },
+    "response_time_ms": {
+      "label": "响应时间",
+      "threshold": 1000,
+      "direction": "higher"
+    },
+    "error_count": {
+      "label": "错误数",
+      "threshold": 1,
+      "direction": "higher"
+    },
+    "fps": {
+      "label": "FPS",
+      "threshold": 45,
+      "direction": "lower"
+    },
+    "gc_time_ms": {
+      "label": "GC耗时",
+      "threshold": 100,
+      "direction": "higher"
+    },
+    "failed_requests": {
+      "label": "失败请求数",
+      "threshold": 1,
+      "direction": "higher"
+    },
+    "io_wait_ms": {
+      "label": "IO等待",
+      "threshold": 50,
+      "direction": "higher"
+    }
+  }
+}

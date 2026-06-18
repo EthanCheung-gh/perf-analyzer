@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -1150,6 +1151,105 @@ def build_report_html(markdown_text: str) -> str:
 """
 
 
+def parse_json_config(uploaded_file: object | None) -> dict:
+    if uploaded_file is None:
+        return {}
+    try:
+        payload = uploaded_file.getvalue()
+        return json.loads(payload.decode("utf-8-sig"))
+    except Exception as exc:
+        st.sidebar.warning(f"配置文件读取失败：{exc}")
+        return {}
+
+
+def config_field_aliases(config: dict, field: str) -> tuple[str, ...]:
+    fields = config.get("fields", {})
+    value = fields.get(field, ())
+    if isinstance(value, str):
+        return parse_aliases(value)
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def config_analysis_value(config: dict, key: str, default: float) -> float:
+    analysis = config.get("analysis", {})
+    value = analysis.get(key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def metric_config_entry(config: dict, metric: Metric) -> dict:
+    metric_configs = config.get("metrics", {})
+    candidates = [metric.key, metric.label]
+    if metric.key.startswith("extra::"):
+        candidates.append(dynamic_metric_label(metric.key))
+    for candidate in candidates:
+        value = metric_configs.get(candidate)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def normalize_config_direction(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("higher", "high", "up", "越高越差", "高", "true"):
+        return True
+    if text in ("lower", "low", "down", "越低越差", "低", "false"):
+        return False
+    return default
+
+
+def configured_metric_from_import(config: dict, metric: Metric) -> Metric:
+    entry = metric_config_entry(config, metric)
+    higher_is_worse = normalize_config_direction(entry.get("direction"), metric.higher_is_worse)
+    return replace(metric, higher_is_worse=higher_is_worse)
+
+
+def threshold_from_import(config: dict, metric: Metric) -> float:
+    entry = metric_config_entry(config, metric)
+    value = entry.get("threshold", metric.default_threshold)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(metric.default_threshold)
+
+
+def build_settings_config(
+    field_aliases: dict[str, tuple[str, ...]],
+    slope_threshold: float,
+    warmup_minutes: float,
+    metrics: list[Metric],
+    thresholds: dict[str, float],
+) -> dict:
+    return {
+        "version": 1,
+        "fields": {field: list(aliases) for field, aliases in field_aliases.items() if aliases},
+        "analysis": {
+            "memory_leak_slope_threshold": slope_threshold,
+            "warmup_minutes": warmup_minutes,
+        },
+        "metrics": {
+            metric.key: {
+                "label": metric.label,
+                "threshold": thresholds.get(metric.key, metric.default_threshold),
+                "direction": "higher" if metric.higher_is_worse else "lower",
+            }
+            for metric in metrics
+        },
+    }
+
+
+def config_to_json_bytes(config: dict) -> bytes:
+    return json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8-sig")
+
+
 def render_system_info(system_info: pd.DataFrame) -> None:
     st.subheader("系统信息")
     if system_info.empty:
@@ -1814,6 +1914,14 @@ def main() -> None:
             accept_multiple_files=True,
             help="可以一次上传多个 Excel。文件名会作为数据源名称，用于版本对比和多批次对比。",
         )
+        settings_file = st.file_uploader(
+            "导入分析配置",
+            type=["json"],
+            help="可选。导入字段别名、阈值、告警方向、泄漏阈值和稳定区间。配置只覆盖能匹配上的指标，其他指标继续使用自动默认值。",
+        )
+        imported_config = parse_json_config(settings_file)
+        if imported_config:
+            st.caption("已加载分析配置；未匹配的指标会自动忽略。")
         use_sample = not uploaded_files
         if use_sample:
             ensure_sample_file()
@@ -1828,7 +1936,7 @@ def main() -> None:
                 field: parse_aliases(
                     st.text_input(
                         label,
-                        value="",
+                        value=",".join(config_field_aliases(imported_config, field)),
                         placeholder="例如：字段A,字段B",
                         help=f"如果采集工具导出的 {label} 表头无法被自动识别，可以在这里填写额外别名，多个别名用英文逗号分隔。",
                     )
@@ -1839,7 +1947,7 @@ def main() -> None:
         slope_threshold = st.number_input(
             "内存疑似泄漏斜率阈值(MB/分钟)",
             min_value=0.0,
-            value=2.0,
+            value=config_analysis_value(imported_config, "memory_leak_slope_threshold", 2.0),
             step=0.5,
             help="内存线性增长斜率达到该值，并且趋势较明显时，会标记为疑似泄漏。",
         )
@@ -1848,7 +1956,7 @@ def main() -> None:
         warmup_minutes = st.number_input(
             "排除每个场景前 N 分钟",
             min_value=0.0,
-            value=0.0,
+            value=config_analysis_value(imported_config, "warmup_minutes", 0.0),
             step=0.5,
             help="用于排除启动预热、缓存加载等早期尖峰。裁剪会按数据源 + 场景分别计算，不修改原始 Excel。",
         )
@@ -1872,28 +1980,53 @@ def main() -> None:
     metrics = discover_metrics(data)
     with st.sidebar:
         st.header("阈值")
-        st.caption("核心指标使用内置默认阈值；动态扩展指标默认使用当前数据 P95，可按需要调整。")
+        st.caption("核心指标使用内置默认阈值；动态扩展指标默认使用当前数据 P95。可导入 JSON 配置覆盖阈值和方向。")
         thresholds = {}
         configured_metrics = []
-        for metric in metrics:
-            direction = st.selectbox(
-                f"{metric.label} 告警方向",
-                ["越高越差", "越低越差"],
-                index=0 if metric.higher_is_worse else 1,
-                key=f"direction_{metric.key}",
-                help="例如 CPU、内存、响应时间通常越高越差；FPS、成功率、QPS 在某些场景下可能越低越差。",
+        metric_config_count = sum(1 for metric in metrics if metric_config_entry(imported_config, metric))
+        with st.expander("阈值配置", expanded=not imported_config):
+            threshold_display = st.radio(
+                "显示方式",
+                ["配置命中指标", "全部指标"],
+                index=0 if imported_config and metric_config_count else 1,
+                horizontal=True,
+                help="导入配置后可以只显示配置文件命中的指标；未显示的指标仍会使用导入值或自动默认值参与分析。",
             )
-            configured_metric = replace(metric, higher_is_worse=direction == "越高越差")
-            configured_metrics.append(configured_metric)
-            thresholds[metric.key] = st.number_input(
-                configured_metric.threshold_label,
-                min_value=0.0,
-                value=float(configured_metric.default_threshold),
-                step=1.0,
-                key=f"threshold_{metric.key}",
-                help="用于异常点、超阈次数、超阈占比、最大连续超阈和趋势图阈值线。不会修改原始数据。",
-            )
+            if imported_config:
+                st.caption(f"当前数据识别到 {len(metrics)} 个指标，配置命中 {metric_config_count} 个。")
+            for metric in metrics:
+                configured_metric = configured_metric_from_import(imported_config, metric)
+                threshold_value = threshold_from_import(imported_config, metric)
+                show_metric_controls = threshold_display == "全部指标" or bool(metric_config_entry(imported_config, metric))
+                if show_metric_controls:
+                    direction = st.selectbox(
+                        f"{metric.label} 告警方向",
+                        ["越高越差", "越低越差"],
+                        index=0 if configured_metric.higher_is_worse else 1,
+                        key=f"direction_{metric.key}",
+                        help="例如 CPU、内存、响应时间通常越高越差；FPS、成功率、QPS 在某些场景下可能越低越差。",
+                    )
+                    configured_metric = replace(configured_metric, higher_is_worse=direction == "越高越差")
+                    threshold_value = st.number_input(
+                        configured_metric.threshold_label,
+                        min_value=0.0,
+                        value=float(threshold_value),
+                        step=1.0,
+                        key=f"threshold_{metric.key}",
+                        help="用于异常点、超阈次数、超阈占比、最大连续超阈和趋势图阈值线。不会修改原始数据。",
+                    )
+                configured_metrics.append(configured_metric)
+                thresholds[metric.key] = threshold_value
         metrics = configured_metrics
+
+        current_config = build_settings_config(field_aliases, float(slope_threshold), float(warmup_minutes), metrics, thresholds)
+        st.download_button(
+            "导出当前分析配置",
+            config_to_json_bytes(current_config),
+            file_name="perf_analyzer_config.json",
+            mime="application/json",
+            help="导出当前字段别名、分析参数、阈值和告警方向。下次可直接导入复用；不同数据集只会应用能匹配上的指标。",
+        )
 
         st.header("筛选")
         selected_sources = st.multiselect(
