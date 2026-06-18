@@ -22,6 +22,26 @@ MEMORY_PERCENT_KEYS = ("内存占用百分比", "memory percent", "memory%", "me
 THREAD_KEYS = ("线程", "thread")
 HANDLE_KEYS = ("句柄", "handle")
 IO_KEYS = ("io", "i/o", "读写", "磁盘")
+QPS_KEYS = ("qps", "每秒请求", "请求吞吐")
+TPS_KEYS = ("tps", "每秒事务", "事务吞吐")
+TASK_COUNT_KEYS = ("任务数", "处理条数", "task", "processed", "records")
+CONCURRENCY_KEYS = ("并发", "concurrency", "connections", "连接数", "用户数")
+RESPONSE_TIME_KEYS = ("响应时间", "response", "latency", "耗时", "duration")
+ERROR_COUNT_KEYS = ("错误数", "error", "失败数", "fail")
+FPS_KEYS = ("fps", "帧率")
+JANK_COUNT_KEYS = ("卡顿", "jank", "stutter")
+GC_COUNT_KEYS = ("gc次数", "gc count", "gc_count")
+GC_TIME_KEYS = ("gc耗时", "gc time", "gc_time")
+HEAP_KEYS = ("堆内存", "heap")
+NETWORK_UP_KEYS = ("网络上行", "上行", "upload", "network up", "tx")
+NETWORK_DOWN_KEYS = ("网络下行", "下行", "download", "network down", "rx")
+REQUEST_COUNT_KEYS = ("请求数", "request count", "requests")
+FAILED_REQUEST_KEYS = ("失败请求", "failed request", "request fail")
+RETRY_COUNT_KEYS = ("重试", "retry")
+DISK_READ_KEYS = ("磁盘读", "disk read", "read mb")
+DISK_WRITE_KEYS = ("磁盘写", "disk write", "write mb")
+IOPS_KEYS = ("iops", "io次数")
+IO_WAIT_KEYS = ("io等待", "io wait", "iowait")
 MAPPING_FIELDS = {
     "timestamp": ("时间戳", TIME_KEYS),
     "cpu_percent": ("CPU%", CPU_KEYS),
@@ -31,6 +51,26 @@ MAPPING_FIELDS = {
     "threads": ("线程", THREAD_KEYS),
     "handles": ("句柄", HANDLE_KEYS),
     "io": ("io", IO_KEYS),
+    "qps": ("QPS", QPS_KEYS),
+    "tps": ("TPS", TPS_KEYS),
+    "task_count": ("任务数/处理条数", TASK_COUNT_KEYS),
+    "concurrency": ("并发数/连接数", CONCURRENCY_KEYS),
+    "response_time_ms": ("响应时间(ms)", RESPONSE_TIME_KEYS),
+    "error_count": ("错误数", ERROR_COUNT_KEYS),
+    "fps": ("FPS", FPS_KEYS),
+    "jank_count": ("卡顿次数", JANK_COUNT_KEYS),
+    "gc_count": ("GC次数", GC_COUNT_KEYS),
+    "gc_time_ms": ("GC耗时(ms)", GC_TIME_KEYS),
+    "heap_mb": ("堆内存(MB)", HEAP_KEYS),
+    "network_up_kbps": ("网络上行(KB/s)", NETWORK_UP_KEYS),
+    "network_down_kbps": ("网络下行(KB/s)", NETWORK_DOWN_KEYS),
+    "request_count": ("请求数", REQUEST_COUNT_KEYS),
+    "failed_requests": ("失败请求数", FAILED_REQUEST_KEYS),
+    "retry_count": ("重试次数", RETRY_COUNT_KEYS),
+    "disk_read_mbps": ("磁盘读(MB/s)", DISK_READ_KEYS),
+    "disk_write_mbps": ("磁盘写(MB/s)", DISK_WRITE_KEYS),
+    "iops": ("IOPS", IOPS_KEYS),
+    "io_wait_ms": ("IO等待(ms)", IO_WAIT_KEYS),
 }
 
 
@@ -53,6 +93,29 @@ CORE_METRICS = [
     Metric("io", "IO", "", "IO 告警阈值", 8.0),
 ]
 CORE_METRIC_KEYS = {metric.key for metric in CORE_METRICS}
+SEMANTIC_METRICS = [
+    Metric("qps", "QPS", "", "QPS 告警阈值", 10.0, higher_is_worse=False),
+    Metric("tps", "TPS", "", "TPS 告警阈值", 10.0, higher_is_worse=False),
+    Metric("task_count", "任务数", "个", "任务数告警阈值", 10.0, higher_is_worse=False),
+    Metric("concurrency", "并发数", "个", "并发告警阈值", 100.0),
+    Metric("response_time_ms", "响应时间", "ms", "响应时间告警阈值", 1000.0),
+    Metric("error_count", "错误数", "个", "错误数告警阈值", 1.0),
+    Metric("fps", "FPS", "", "FPS 告警阈值", 45.0, higher_is_worse=False),
+    Metric("jank_count", "卡顿次数", "次", "卡顿次数告警阈值", 1.0),
+    Metric("gc_count", "GC次数", "次", "GC次数告警阈值", 10.0),
+    Metric("gc_time_ms", "GC耗时", "ms", "GC耗时告警阈值", 100.0),
+    Metric("heap_mb", "堆内存", "MB", "堆内存告警阈值", 1024.0),
+    Metric("network_up_kbps", "网络上行", "KB/s", "网络上行告警阈值", 1024.0),
+    Metric("network_down_kbps", "网络下行", "KB/s", "网络下行告警阈值", 4096.0),
+    Metric("request_count", "请求数", "个", "请求数告警阈值", 1000.0, higher_is_worse=False),
+    Metric("failed_requests", "失败请求数", "个", "失败请求告警阈值", 1.0),
+    Metric("retry_count", "重试次数", "次", "重试次数告警阈值", 1.0),
+    Metric("disk_read_mbps", "磁盘读", "MB/s", "磁盘读告警阈值", 100.0),
+    Metric("disk_write_mbps", "磁盘写", "MB/s", "磁盘写告警阈值", 100.0),
+    Metric("iops", "IOPS", "", "IOPS 告警阈值", 1000.0),
+    Metric("io_wait_ms", "IO等待", "ms", "IO等待告警阈值", 50.0),
+]
+STANDARD_METRICS = [*CORE_METRICS, *SEMANTIC_METRICS]
 META_COLUMNS = {"timestamp", "source", "scene", "display_scene"}
 
 
@@ -119,6 +182,26 @@ def normalize_scene(df: pd.DataFrame, scene_name: str, source_name: str, field_a
         "threads": find_column(columns, THREAD_KEYS, aliases=field_aliases.get("threads", ())),
         "handles": find_column(columns, HANDLE_KEYS, aliases=field_aliases.get("handles", ())),
         "io": find_column(columns, IO_KEYS, aliases=field_aliases.get("io", ())),
+        "qps": find_column(columns, QPS_KEYS, aliases=field_aliases.get("qps", ())),
+        "tps": find_column(columns, TPS_KEYS, aliases=field_aliases.get("tps", ())),
+        "task_count": find_column(columns, TASK_COUNT_KEYS, aliases=field_aliases.get("task_count", ())),
+        "concurrency": find_column(columns, CONCURRENCY_KEYS, aliases=field_aliases.get("concurrency", ())),
+        "response_time_ms": find_column(columns, RESPONSE_TIME_KEYS, aliases=field_aliases.get("response_time_ms", ())),
+        "error_count": find_column(columns, ERROR_COUNT_KEYS, aliases=field_aliases.get("error_count", ())),
+        "fps": find_column(columns, FPS_KEYS, aliases=field_aliases.get("fps", ())),
+        "jank_count": find_column(columns, JANK_COUNT_KEYS, aliases=field_aliases.get("jank_count", ())),
+        "gc_count": find_column(columns, GC_COUNT_KEYS, aliases=field_aliases.get("gc_count", ())),
+        "gc_time_ms": find_column(columns, GC_TIME_KEYS, aliases=field_aliases.get("gc_time_ms", ())),
+        "heap_mb": find_column(columns, HEAP_KEYS, aliases=field_aliases.get("heap_mb", ())),
+        "network_up_kbps": find_column(columns, NETWORK_UP_KEYS, aliases=field_aliases.get("network_up_kbps", ())),
+        "network_down_kbps": find_column(columns, NETWORK_DOWN_KEYS, aliases=field_aliases.get("network_down_kbps", ())),
+        "request_count": find_column(columns, REQUEST_COUNT_KEYS, aliases=field_aliases.get("request_count", ())),
+        "failed_requests": find_column(columns, FAILED_REQUEST_KEYS, aliases=field_aliases.get("failed_requests", ())),
+        "retry_count": find_column(columns, RETRY_COUNT_KEYS, aliases=field_aliases.get("retry_count", ())),
+        "disk_read_mbps": find_column(columns, DISK_READ_KEYS, aliases=field_aliases.get("disk_read_mbps", ())),
+        "disk_write_mbps": find_column(columns, DISK_WRITE_KEYS, aliases=field_aliases.get("disk_write_mbps", ())),
+        "iops": find_column(columns, IOPS_KEYS, aliases=field_aliases.get("iops", ())),
+        "io_wait_ms": find_column(columns, IO_WAIT_KEYS, aliases=field_aliases.get("io_wait_ms", ())),
     }
 
     normalized = pd.DataFrame(index=df.index)
@@ -187,8 +270,83 @@ def load_workbooks(files: tuple[tuple[str, bytes | None], ...], field_aliases: d
 
 
 def percentile_95(series: pd.Series) -> float:
+    return percentile(series, 0.95)
+
+
+def percentile(series: pd.Series, quantile: float) -> float:
     values = series.dropna()
-    return float(values.quantile(0.95)) if not values.empty else np.nan
+    return float(values.quantile(quantile)) if not values.empty else np.nan
+
+
+def iqr(series: pd.Series) -> float:
+    values = series.dropna()
+    if values.empty:
+        return np.nan
+    return float(values.quantile(0.75) - values.quantile(0.25))
+
+
+def coefficient_of_variation(series: pd.Series) -> float:
+    values = series.dropna()
+    if values.empty:
+        return np.nan
+    mean = values.mean()
+    if mean == 0 or pd.isna(mean):
+        return np.nan
+    return float(values.std(ddof=0) / mean * 100)
+
+
+def alert_mask(series: pd.Series, threshold: float, higher_is_worse: bool) -> pd.Series:
+    return series > threshold if higher_is_worse else series < threshold
+
+
+def format_duration(minutes: float) -> str:
+    if pd.isna(minutes):
+        return "-"
+    if minutes < 1:
+        return f"{minutes * 60:.0f}秒"
+    hours = int(minutes // 60)
+    remain = minutes % 60
+    if hours:
+        return f"{hours}小时{remain:.0f}分钟"
+    return f"{remain:.1f}分钟"
+
+
+def format_peak_offset(group: pd.DataFrame, metric_key: str) -> str:
+    values = group[["timestamp", metric_key]].dropna()
+    if values.empty:
+        return "-"
+    idx = values[metric_key].idxmax()
+    start = group["timestamp"].dropna().min()
+    peak_time = group.loc[idx, "timestamp"]
+    if pd.isna(start) or pd.isna(peak_time):
+        return "-"
+    minutes = (peak_time - start).total_seconds() / 60
+    return format_duration(minutes)
+
+
+def max_continuous_alert_minutes(group: pd.DataFrame, metric: Metric, threshold: float) -> float:
+    values = group[["timestamp", metric.key]].dropna().sort_values("timestamp")
+    if values.empty:
+        return 0.0
+    alerts = alert_mask(values[metric.key], threshold, metric.higher_is_worse).to_numpy()
+    if not alerts.any():
+        return 0.0
+
+    timestamps = values["timestamp"].reset_index(drop=True)
+    diffs = timestamps.diff().dropna().dt.total_seconds() / 60
+    sample_minutes = float(diffs.median()) if not diffs.empty and diffs.median() > 0 else 0.0
+
+    max_minutes = 0.0
+    run_start: int | None = None
+    for index, is_alert in enumerate(alerts):
+        if is_alert and run_start is None:
+            run_start = index
+        if run_start is not None and (not is_alert or index == len(alerts) - 1):
+            run_end = index if is_alert else index - 1
+            span = (timestamps.iloc[run_end] - timestamps.iloc[run_start]).total_seconds() / 60
+            max_minutes = max(max_minutes, span + sample_minutes)
+            run_start = None
+    return float(max_minutes)
 
 
 def format_value(value: float, unit: str = "") -> str:
@@ -202,7 +360,7 @@ def format_value(value: float, unit: str = "") -> str:
 def discover_metrics(data: pd.DataFrame) -> list[Metric]:
     """根据当前数据生成指标列表：核心指标优先，其余数值列作为动态扩展指标。"""
     metrics: list[Metric] = []
-    for metric in CORE_METRICS:
+    for metric in STANDARD_METRICS:
         if metric.key in data.columns and data[metric.key].notna().any():
             metrics.append(metric)
 
@@ -249,12 +407,21 @@ def summarize(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Me
                 continue
             row[f"{metric.label}均值"] = values.mean()
             row[f"{metric.label}峰值"] = values.max()
+            row[f"{metric.label}P90"] = percentile(values, 0.90)
             row[f"{metric.label}P95"] = percentile_95(values)
+            row[f"{metric.label}P99"] = percentile(values, 0.99)
+            row[f"{metric.label}标准差"] = values.std(ddof=0)
+            row[f"{metric.label}IQR"] = iqr(values)
+            row[f"{metric.label}变异系数(%)"] = coefficient_of_variation(values)
+            slope, _ = linear_slope_per_minute(group, metric.key)
+            row[f"{metric.label}趋势斜率/分钟"] = slope
+            row[f"{metric.label}峰值发生在"] = format_peak_offset(group, metric.key)
             if metric.key in thresholds:
-                if metric.higher_is_worse:
-                    row[f"{metric.label}超阈次数"] = int((values > thresholds[metric.key]).sum())
-                else:
-                    row[f"{metric.label}超阈次数"] = int((values < thresholds[metric.key]).sum())
+                mask = alert_mask(values, thresholds[metric.key], metric.higher_is_worse)
+                row[f"{metric.label}超阈次数"] = int(mask.sum())
+                row[f"{metric.label}超阈占比(%)"] = float(mask.mean() * 100)
+                max_minutes = max_continuous_alert_minutes(group, metric, thresholds[metric.key])
+                row[f"{metric.label}最大连续超阈"] = format_duration(max_minutes)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -271,7 +438,13 @@ def metric_stats(data: pd.DataFrame, group_cols: list[str], metrics: list[Metric
                 continue
             row[f"{metric.key}_mean"] = values.mean()
             row[f"{metric.key}_max"] = values.max()
+            row[f"{metric.key}_p90"] = percentile(values, 0.90)
             row[f"{metric.key}_p95"] = percentile_95(values)
+            row[f"{metric.key}_p99"] = percentile(values, 0.99)
+            row[f"{metric.key}_std"] = values.std(ddof=0)
+            row[f"{metric.key}_iqr"] = iqr(values)
+            row[f"{metric.key}_cv"] = coefficient_of_variation(values)
+            row[f"{metric.key}_slope"] = linear_slope_per_minute(group, metric.key)[0]
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -329,6 +502,143 @@ def leak_analysis(data: pd.DataFrame, slope_threshold: float) -> pd.DataFrame:
                 "R2": r2,
                 "首尾增长(MB)": growth,
                 "判断": risk,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def trend_analysis(data: pd.DataFrame, metrics: list[Metric]) -> pd.DataFrame:
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        sorted_group = group.sort_values("timestamp")
+        for metric in metrics:
+            if metric.key not in sorted_group or sorted_group[metric.key].dropna().empty:
+                continue
+            slope, r2 = linear_slope_per_minute(sorted_group, metric.key)
+            values = sorted_group[metric.key].dropna()
+            growth = np.nan
+            if len(values) >= 2:
+                growth = float(values.iloc[-1] - values.iloc[0])
+            if pd.isna(slope):
+                direction = "数据不足"
+            elif abs(slope) < 1e-9:
+                direction = "基本稳定"
+            elif slope > 0:
+                direction = "上升"
+            else:
+                direction = "下降"
+            rows.append(
+                {
+                    "数据源": source,
+                    "场景": scene,
+                    "指标": metric.label,
+                    "趋势斜率/分钟": slope,
+                    "R2": r2,
+                    "首尾变化": growth,
+                    "趋势": direction,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def alert_continuity_summary(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> pd.DataFrame:
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        for metric in metrics:
+            if metric.key not in thresholds or metric.key not in group:
+                continue
+            values = group[metric.key].dropna()
+            if values.empty:
+                continue
+            mask = alert_mask(values, thresholds[metric.key], metric.higher_is_worse)
+            alert_count = int(mask.sum())
+            if alert_count == 0:
+                continue
+            max_minutes = max_continuous_alert_minutes(group, metric, thresholds[metric.key])
+            rows.append(
+                {
+                    "数据源": source,
+                    "场景": scene,
+                    "指标": metric.label,
+                    "超阈次数": alert_count,
+                    "超阈占比(%)": float(mask.mean() * 100),
+                    "最大连续超阈": format_duration(max_minutes),
+                    "最大连续超阈(分钟)": max_minutes,
+                }
+            )
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    return result.sort_values(["超阈占比(%)", "最大连续超阈(分钟)"], ascending=False)
+
+
+def first_available_metric(data: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+    for key in candidates:
+        if key in data and data[key].dropna().any():
+            return key
+    return None
+
+
+def safe_ratio(numerator: float, denominator: float) -> float:
+    if pd.isna(numerator) or pd.isna(denominator) or denominator == 0:
+        return np.nan
+    return float(numerator / denominator)
+
+
+def resource_efficiency_analysis(data: pd.DataFrame) -> pd.DataFrame:
+    throughput_key = first_available_metric(data, ("qps", "tps", "task_count", "request_count"))
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        throughput = group[throughput_key].mean() if throughput_key else np.nan
+        throughput_label = {
+            "qps": "QPS",
+            "tps": "TPS",
+            "task_count": "任务数",
+            "request_count": "请求数",
+        }.get(throughput_key or "", "-")
+        concurrency = group["concurrency"].mean() if "concurrency" in group else np.nan
+        cpu_p95 = percentile_95(group["cpu_percent"]) if "cpu_percent" in group else np.nan
+        memory_peak = group["memory_mb"].max() if "memory_mb" in group else np.nan
+        io_p95 = percentile_95(group["io"]) if "io" in group else np.nan
+        response_p95 = percentile_95(group["response_time_ms"]) if "response_time_ms" in group else np.nan
+        fps_p95 = percentile_95(group["fps"]) if "fps" in group else np.nan
+        gc_time_p95 = percentile_95(group["gc_time_ms"]) if "gc_time_ms" in group else np.nan
+        network_total = np.nan
+        if "network_up_kbps" in group or "network_down_kbps" in group:
+            network_up = group["network_up_kbps"].mean() if "network_up_kbps" in group else 0
+            network_down = group["network_down_kbps"].mean() if "network_down_kbps" in group else 0
+            network_total = network_up + network_down
+        disk_total = np.nan
+        if "disk_read_mbps" in group or "disk_write_mbps" in group:
+            disk_read = group["disk_read_mbps"].mean() if "disk_read_mbps" in group else 0
+            disk_write = group["disk_write_mbps"].mean() if "disk_write_mbps" in group else 0
+            disk_total = disk_read + disk_write
+
+        request_count = group["request_count"].sum() if "request_count" in group else np.nan
+        failed_requests = group["failed_requests"].sum() if "failed_requests" in group else np.nan
+        error_count = group["error_count"].sum() if "error_count" in group else np.nan
+        failure_rate = safe_ratio(failed_requests, request_count) * 100 if not pd.isna(failed_requests) else np.nan
+        error_per_thousand = safe_ratio(error_count, request_count) * 1000 if not pd.isna(error_count) else np.nan
+
+        rows.append(
+            {
+                "数据源": source,
+                "场景": scene,
+                "吞吐口径": throughput_label,
+                "平均吞吐": throughput,
+                "平均并发": concurrency,
+                "CPU P95": cpu_p95,
+                "内存峰值(MB)": memory_peak,
+                "响应时间P95(ms)": response_p95,
+                "FPS P95": fps_p95,
+                "GC耗时P95(ms)": gc_time_p95,
+                "CPU P95/吞吐": safe_ratio(cpu_p95, throughput),
+                "内存峰值/并发(MB)": safe_ratio(memory_peak, concurrency),
+                "IO P95/吞吐": safe_ratio(io_p95, throughput),
+                "网络KBps/吞吐": safe_ratio(network_total, throughput),
+                "磁盘MBps/吞吐": safe_ratio(disk_total, throughput),
+                "失败率(%)": failure_rate,
+                "每千请求错误数": error_per_thousand,
             }
         )
     return pd.DataFrame(rows)
@@ -423,6 +733,18 @@ def build_conclusions(data: pd.DataFrame, thresholds: dict[str, float], slope_th
     alerts = count_alerts(data, thresholds, metrics)
     if alerts:
         conclusions.append(f"当前阈值下共有 {alerts} 个超阈采样点，建议优先查看“异常”页定位时间和场景。")
+        alert_summary = alert_continuity_summary(data, thresholds, metrics)
+        if not alert_summary.empty:
+            top_ratio = alert_summary.iloc[0]
+            top_duration = alert_summary.sort_values("最大连续超阈(分钟)", ascending=False).iloc[0]
+            conclusions.append(
+                f"超阈占比最高的是 {top_ratio['数据源']} / {top_ratio['场景']} 的 {top_ratio['指标']}，"
+                f"占比 {top_ratio['超阈占比(%)']:.2f}%。"
+            )
+            conclusions.append(
+                f"最长连续超阈出现在 {top_duration['数据源']} / {top_duration['场景']} 的 {top_duration['指标']}，"
+                f"持续 {top_duration['最大连续超阈']}。"
+            )
     else:
         conclusions.append("当前阈值下未发现超阈采样点。")
 
@@ -470,6 +792,9 @@ def build_report_markdown(
 ) -> str:
     summary = summarize(data, thresholds, metrics)
     leaks = leak_analysis(data, slope_threshold)
+    trends = trend_analysis(data, metrics)
+    alert_summary = alert_continuity_summary(data, thresholds, metrics)
+    efficiency = resource_efficiency_analysis(data)
     conclusions = build_conclusions(data, thresholds, slope_threshold, metrics)
     lines = [
         "# 应用资源消耗分析报告",
@@ -482,9 +807,21 @@ def build_report_markdown(
         "",
         dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。",
         "",
+        "## 告警持续性",
+        "",
+        dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
+        "",
         "## 内存趋势检测",
         "",
         dataframe_to_markdown(leaks) if not leaks.empty else "无内存趋势数据。",
+        "",
+        "## 全指标趋势斜率",
+        "",
+        dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。",
+        "",
+        "## 资源效率",
+        "",
+        dataframe_to_markdown(efficiency) if not efficiency.empty else "无资源效率数据。",
         "",
         "## 配置建议",
         "",
@@ -496,8 +833,13 @@ def build_report_markdown(
         "",
         "- 均值：场景内全部采样点平均值",
         "- 峰值：场景内最大采样值",
-        "- P95：95 分位值",
+        "- P90 / P95 / P99：对应分位值，用于观察高水位和尾部风险",
         "- 超阈次数：指标值大于侧边栏阈值的采样点数量",
+        "- 超阈占比：超阈采样点数量 / 有效采样点数量",
+        "- 最大连续超阈：同一指标连续处于超阈状态的最长时间",
+        "- 标准差 / IQR / 变异系数：用于观察资源波动性",
+        "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟",
+        "- 资源效率：把 CPU、内存、IO、网络、磁盘等资源消耗按吞吐或并发归一化",
         "- 内存斜率：按时间对内存占用做线性回归，单位 MB/分钟",
     ]
     return "\n".join(lines)
@@ -547,6 +889,15 @@ def render_overview(data: pd.DataFrame, thresholds: dict[str, float], metrics: l
 
     summary = summarize(data, thresholds, metrics)
     st.dataframe(summary, use_container_width=True, hide_index=True)
+
+    alert_summary = alert_continuity_summary(data, thresholds, metrics)
+    if not alert_summary.empty:
+        st.markdown("**告警持续性摘要**")
+        st.dataframe(
+            alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore"),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def count_alerts(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> int:
@@ -613,7 +964,13 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
                 continue
             long_rows.append({"场景": scene, "指标": metric.label, "统计": "均值", "值": values.mean()})
             long_rows.append({"场景": scene, "指标": metric.label, "统计": "峰值", "值": values.max()})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "P90", "值": percentile(values, 0.90)})
             long_rows.append({"场景": scene, "指标": metric.label, "统计": "P95", "值": percentile_95(values)})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "P99", "值": percentile(values, 0.99)})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "标准差", "值": values.std(ddof=0)})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "IQR", "值": iqr(values)})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "变异系数", "值": coefficient_of_variation(values)})
+            long_rows.append({"场景": scene, "指标": metric.label, "统计": "趋势斜率", "值": linear_slope_per_minute(group, metric.key)[0]})
 
     compare = pd.DataFrame(long_rows)
     if compare.empty:
@@ -621,7 +978,13 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
         return
 
     metric_label = st.selectbox("对比指标", sorted(compare["指标"].unique()))
-    stat = st.radio("统计口径", ["均值", "峰值", "P95"], index=2, horizontal=True)
+    stat = st.radio(
+        "统计口径",
+        ["均值", "峰值", "P90", "P95", "P99", "标准差", "IQR", "变异系数", "趋势斜率"],
+        index=3,
+        horizontal=True,
+        key="comparison_stat",
+    )
     chart_data = compare[(compare["指标"] == metric_label) & (compare["统计"] == stat)]
     fig = px.bar(chart_data, x="场景", y="值", color="场景", title=f"{metric_label}{stat}对比")
     fig.update_layout(height=360, showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
@@ -669,6 +1032,42 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
         st.plotly_chart(heatmap, use_container_width=True)
 
 
+def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
+    st.subheader("资源效率")
+    filtered = data[data["scene"].isin(selected_scenes)].copy()
+    if filtered.empty:
+        st.warning("当前筛选条件下没有数据。")
+        return
+    efficiency = resource_efficiency_analysis(filtered)
+    if efficiency.empty:
+        st.info("没有可用于资源效率分析的数据。")
+        return
+
+    st.caption("资源效率把 CPU、内存、IO、网络、磁盘等资源消耗归一化到吞吐或并发口径，适合判断版本是否真的变差。")
+    st.dataframe(efficiency, use_container_width=True, hide_index=True)
+
+    ratio_columns = [
+        "CPU P95/吞吐",
+        "内存峰值/并发(MB)",
+        "IO P95/吞吐",
+        "网络KBps/吞吐",
+        "磁盘MBps/吞吐",
+        "失败率(%)",
+        "每千请求错误数",
+    ]
+    available = [column for column in ratio_columns if column in efficiency and efficiency[column].notna().any()]
+    if not available:
+        st.info("当前数据缺少吞吐、并发、请求数等字段，无法绘制效率指标。")
+        return
+
+    metric_column = st.selectbox("效率指标", available)
+    chart_data = efficiency.copy()
+    chart_data["场景标识"] = chart_data["数据源"].astype(str) + " / " + chart_data["场景"].astype(str)
+    fig = px.bar(chart_data, x="场景标识", y=metric_column, color="数据源", title=f"{metric_column} 对比")
+    fig.update_layout(height=380, margin=dict(l=20, r=20, t=50, b=20))
+    st.plotly_chart(fig, use_container_width=True)
+
+
 def render_alerts(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric]) -> None:
     st.subheader("异常点")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
@@ -714,7 +1113,25 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
 
     stats = with_display_label(stats) if "source" in stats.columns else stats.assign(display_scene=stats["scene"])
     baseline = st.selectbox("基准场景", list(stats["display_scene"]))
-    stat_name = st.radio("统计口径", ["mean", "max", "p95"], format_func={"mean": "均值", "max": "峰值", "p95": "P95"}.get, horizontal=True)
+    stat_labels = {
+        "mean": "均值",
+        "max": "峰值",
+        "p90": "P90",
+        "p95": "P95",
+        "p99": "P99",
+        "std": "标准差",
+        "iqr": "IQR",
+        "cv": "变异系数",
+        "slope": "趋势斜率",
+    }
+    stat_name = st.radio(
+        "统计口径",
+        list(stat_labels),
+        index=3,
+        format_func=stat_labels.get,
+        horizontal=True,
+        key="baseline_growth_stat",
+    )
     baseline_row = stats[stats["display_scene"] == baseline].iloc[0]
     rows = []
     for _, row in stats.iterrows():
@@ -744,12 +1161,13 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_threshold: float) -> None:
-    st.subheader("内存泄漏趋势检测")
+def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_threshold: float, metrics: list[Metric]) -> None:
+    st.subheader("内存泄漏与趋势风险")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     if filtered.empty:
         st.warning("当前筛选条件下没有数据。")
         return
+    st.markdown("**内存泄漏趋势检测**")
     result = leak_analysis(filtered, slope_threshold)
     st.dataframe(result, use_container_width=True, hide_index=True)
 
@@ -761,6 +1179,13 @@ def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_
         fig.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("**全指标趋势斜率**")
+    trends = trend_analysis(filtered, metrics)
+    if trends.empty:
+        st.info("没有可用于趋势风险分析的指标。")
+        return
+    st.dataframe(trends, use_container_width=True, hide_index=True)
+
 
 def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
     st.subheader("多文件版本对比")
@@ -770,15 +1195,60 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         return
     stats = metric_stats(filtered, ["source", "scene"], metrics)
     metric = st.selectbox("版本对比指标", metrics, format_func=lambda item: item.label)
-    stat_name = st.radio("版本对比口径", ["mean", "max", "p95"], format_func={"mean": "均值", "max": "峰值", "p95": "P95"}.get, horizontal=True)
+    stat_labels = {
+        "mean": "均值",
+        "max": "峰值",
+        "p90": "P90",
+        "p95": "P95",
+        "p99": "P99",
+        "std": "标准差",
+        "iqr": "IQR",
+        "cv": "变异系数",
+        "slope": "趋势斜率",
+    }
+    stat_name = st.radio(
+        "版本对比口径",
+        list(stat_labels),
+        index=3,
+        format_func=stat_labels.get,
+        horizontal=True,
+        key="version_compare_stat",
+    )
     column = f"{metric.key}_{stat_name}"
     if column not in stats:
         st.info("当前指标没有可对比数据。")
         return
+    sources = list(stats["source"].dropna().unique())
+    baseline_source = st.selectbox("基准数据源", sources)
+    regression_threshold = st.number_input("退化判定阈值(%)", min_value=0.0, value=15.0, step=5.0)
+
     pivot = stats.pivot(index="scene", columns="source", values=column).reset_index()
     st.dataframe(pivot, use_container_width=True, hide_index=True)
+
+    baseline_values = stats[stats["source"] == baseline_source][["scene", column]].rename(columns={column: "基准值"})
+    regression = stats[stats["source"] != baseline_source][["source", "scene", column]].merge(baseline_values, on="scene", how="left")
+    if not regression.empty:
+        regression = regression.rename(columns={"source": "数据源", column: "当前值"})
+        regression["基准数据源"] = baseline_source
+        regression["增长率(%)"] = np.where(
+            regression["基准值"].isna() | (regression["基准值"] == 0),
+            np.nan,
+            (regression["当前值"] - regression["基准值"]) / regression["基准值"] * 100,
+        )
+        if metric.higher_is_worse:
+            regression["判断"] = np.where(regression["增长率(%)"] > regression_threshold, "退化", "通过")
+        else:
+            regression["判断"] = np.where(regression["增长率(%)"] < -regression_threshold, "退化", "通过")
+        regression.loc[regression["增长率(%)"].isna(), "判断"] = "基准不足"
+        st.markdown("**退化判定**")
+        st.dataframe(
+            regression[["scene", "基准数据源", "数据源", "基准值", "当前值", "增长率(%)", "判断"]].rename(columns={"scene": "场景"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
     long_data = stats[["source", "scene", column]].rename(columns={column: "值"})
-    fig = px.bar(long_data, x="scene", y="值", color="source", barmode="group", title=f"不同数据源 {metric.label} 对比")
+    fig = px.bar(long_data, x="scene", y="值", color="source", barmode="group", title=f"不同数据源 {metric.label}{stat_labels[stat_name]} 对比")
     fig.update_layout(height=380, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
@@ -948,7 +1418,7 @@ def main() -> None:
     config_table = pd.DataFrame()
     config_notes: list[str] = []
 
-    tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "分布", "异常", "报告", "系统信息", "原始数据"])
+    tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "分布", "异常", "报告", "系统信息", "原始数据"])
     with tabs[0]:
         render_overview(filtered_data, thresholds, metrics)
     with tabs[1]:
@@ -960,14 +1430,16 @@ def main() -> None:
     with tabs[4]:
         render_baseline_growth(filtered_data, selected_scenes, metrics)
     with tabs[5]:
-        render_leak_detection(filtered_data, selected_scenes, slope_threshold)
+        render_leak_detection(filtered_data, selected_scenes, slope_threshold, metrics)
     with tabs[6]:
         render_version_compare(filtered_data, selected_scenes, metrics)
     with tabs[7]:
-        render_distribution(filtered_data, selected_scenes, metrics)
+        render_efficiency(filtered_data, selected_scenes)
     with tabs[8]:
-        render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+        render_distribution(filtered_data, selected_scenes, metrics)
     with tabs[9]:
+        render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+    with tabs[10]:
         if config_table.empty:
             config_table, config_notes = configuration_recommendation(
                 filtered_data,
@@ -981,10 +1453,10 @@ def main() -> None:
                 slope_threshold=slope_threshold,
             )
         render_report(filtered_data, thresholds, slope_threshold, metrics, config_table, config_notes)
-    with tabs[10]:
+    with tabs[11]:
         selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
         render_system_info(selected_system)
-    with tabs[11]:
+    with tabs[12]:
         filtered = filtered_data.copy()
         st.dataframe(filtered, use_container_width=True, hide_index=True)
         st.download_button(
