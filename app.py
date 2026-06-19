@@ -896,6 +896,94 @@ def bottleneck_hints(data: pd.DataFrame, thresholds: dict[str, float], metrics: 
     return pd.DataFrame(rows)
 
 
+def version_regression_heatmap_data(
+    stats: pd.DataFrame,
+    metrics: list[Metric],
+    baseline_source: str,
+    stat_name: str,
+) -> pd.DataFrame:
+    rows = []
+    for metric in metrics:
+        column = f"{metric.key}_{stat_name}"
+        if column not in stats:
+            continue
+        baseline = stats[stats["source"] == baseline_source][["scene", column]].rename(columns={column: "基准值"})
+        current = stats[stats["source"] != baseline_source][["source", "scene", column]].rename(columns={column: "当前值"})
+        merged = current.merge(baseline, on="scene", how="left")
+        if merged.empty:
+            continue
+        merged["增长率(%)"] = np.where(
+            merged["基准值"].isna() | (merged["基准值"] == 0),
+            np.nan,
+            (merged["当前值"] - merged["基准值"]) / merged["基准值"] * 100,
+        )
+        # 统一成“越大越退化”的口径，FPS/QPS 这类越低越差指标会反向。
+        merged["退化幅度(%)"] = merged["增长率(%)"] if metric.higher_is_worse else -merged["增长率(%)"]
+        for _, row in merged.iterrows():
+            rows.append(
+                {
+                    "场景标识": f"{row['source']} / {row['scene']}",
+                    "指标": metric.label,
+                    "退化幅度(%)": row["退化幅度(%)"],
+                    "增长率(%)": row["增长率(%)"],
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def risk_matrix_data(decisions: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in decisions.iterrows():
+        scene_id = f"{row['数据源']} / {row['场景']}"
+        items = {
+            "超阈占比": value_score(row.get("最大超阈占比(%)", np.nan), 5, 20),
+            "连续超阈": 2 if row.get("最长连续超阈") not in ("-", "0秒", "0.0分钟") and row.get("最大超阈占比(%)", 0) > 0 else 0,
+            "内存趋势": 2 if row.get("内存趋势") == "疑似泄漏" else 1 if row.get("内存趋势") == "轻微增长" else 0,
+            "失败率": value_score(row.get("失败率(%)", np.nan), 0.1, 1.0),
+            "响应时间": value_score(row.get("响应时间P95(ms)", np.nan), 500, 1000),
+            "FPS": value_score(row.get("FPS P95", np.nan), 45, 30, higher_is_worse=False),
+        }
+        for item, score in items.items():
+            rows.append({"场景标识": scene_id, "风险项": item, "风险分": score})
+    return pd.DataFrame(rows)
+
+
+def radar_profile_data(data: pd.DataFrame, decisions: pd.DataFrame, thresholds: dict[str, float]) -> pd.DataFrame:
+    rows = []
+    for _, decision in decisions.iterrows():
+        source = decision["数据源"]
+        scene = decision["场景"]
+        group = data[(data["source"] == source) & (data["scene"] == scene)]
+        if group.empty:
+            continue
+
+        cpu_p95 = percentile_95(group["cpu_percent"]) if "cpu_percent" in group else np.nan
+        memory_pct_p95 = percentile_95(group["memory_percent"]) if "memory_percent" in group else np.nan
+        io_p95 = percentile_95(group["io"]) if "io" in group else np.nan
+        response_p95 = percentile_95(group["response_time_ms"]) if "response_time_ms" in group else np.nan
+        fps_p95 = percentile_95(group["fps"]) if "fps" in group else np.nan
+        failure_rate = decision.get("失败率(%)", np.nan)
+
+        profile = {
+            "CPU压力": min(100, safe_ratio(cpu_p95, thresholds.get("cpu_percent", 80)) * 100),
+            "内存压力": min(100, safe_ratio(memory_pct_p95, thresholds.get("memory_percent", 70)) * 100),
+            "IO压力": min(100, safe_ratio(io_p95, thresholds.get("io", 8)) * 100),
+            "响应风险": min(100, safe_ratio(response_p95, 1000) * 100),
+            "错误风险": min(100, safe_ratio(failure_rate, 1.0) * 100),
+            "流畅风险": min(100, max(0, safe_ratio(60 - fps_p95, 30) * 100) if not pd.isna(fps_p95) else np.nan),
+            "稳定风险": min(100, decision.get("风险评分", 0) * 10),
+        }
+        for dimension, value in profile.items():
+            rows.append(
+                {
+                    "场景标识": f"{source} / {scene}",
+                    "维度": dimension,
+                    "风险分": 0 if pd.isna(value) else float(value),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def round_up_to_common_cores(value: float) -> int:
     if pd.isna(value) or value <= 1:
         return 1
@@ -1472,6 +1560,31 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
     fig.update_layout(height=380, margin=dict(l=20, r=20, t=50, b=20))
     st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("**吞吐-资源散点图**")
+    scatter_y_options = [
+        column
+        for column in ["CPU P95", "内存峰值(MB)", "响应时间P95(ms)", "FPS P95", "GC耗时P95(ms)", "失败率(%)"]
+        if column in efficiency and efficiency[column].notna().any()
+    ]
+    if "平均吞吐" in efficiency and efficiency["平均吞吐"].notna().any() and scatter_y_options:
+        scatter_y = st.selectbox(
+            "散点图纵轴",
+            scatter_y_options,
+            help="横轴固定为平均吞吐。点越靠右表示吞吐越高，纵轴可切换 CPU、内存、响应时间等指标。",
+        )
+        scatter = px.scatter(
+            chart_data,
+            x="平均吞吐",
+            y=scatter_y,
+            size="内存峰值(MB)" if "内存峰值(MB)" in chart_data else None,
+            color="数据源",
+            hover_name="场景标识",
+            labels={"平均吞吐": "平均吞吐", scatter_y: scatter_y},
+            title=f"平均吞吐 vs {scatter_y}",
+        )
+        scatter.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(scatter, use_container_width=True)
+
 
 def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric], slope_threshold: float) -> None:
     st.subheader("决策分析")
@@ -1491,6 +1604,58 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
         st.info("没有可用于风险评级的数据。")
         return
     st.dataframe(decisions, use_container_width=True, hide_index=True)
+
+    matrix = risk_matrix_data(decisions)
+    if not matrix.empty:
+        st.markdown("**风险矩阵**")
+        matrix_pivot = matrix.pivot(index="场景标识", columns="风险项", values="风险分").fillna(0)
+        risk_fig = go.Figure(
+            data=go.Heatmap(
+                z=matrix_pivot.values,
+                x=matrix_pivot.columns,
+                y=matrix_pivot.index,
+                zmin=0,
+                zmax=2,
+                colorscale=[[0, "#2ca02c"], [0.5, "#ffbf00"], [1, "#d62728"]],
+                colorbar=dict(title="风险分", tickvals=[0, 1, 2], ticktext=["低", "中", "高"]),
+                text=matrix_pivot.values,
+                texttemplate="%{text:.0f}",
+            )
+        )
+        risk_fig.update_layout(title="场景风险矩阵", height=360, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(risk_fig, use_container_width=True)
+
+    radar_data = radar_profile_data(filtered, decisions, thresholds)
+    if not radar_data.empty:
+        st.markdown("**风险雷达图**")
+        scene_options = list(radar_data["场景标识"].drop_duplicates())
+        selected_radar_scenes = st.multiselect(
+            "雷达图场景",
+            scene_options,
+            default=scene_options[: min(3, len(scene_options))],
+            help="选择要在雷达图中对比的场景。建议一次选择 1-3 个，避免图形过密。",
+        )
+        radar_fig = go.Figure()
+        for scene_id in selected_radar_scenes:
+            scene_profile = radar_data[radar_data["场景标识"] == scene_id]
+            dimensions = list(scene_profile["维度"])
+            values = list(scene_profile["风险分"])
+            if dimensions:
+                radar_fig.add_trace(
+                    go.Scatterpolar(
+                        r=[*values, values[0]],
+                        theta=[*dimensions, dimensions[0]],
+                        fill="toself",
+                        name=scene_id,
+                    )
+                )
+        radar_fig.update_layout(
+            title="场景风险画像",
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            height=460,
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        st.plotly_chart(radar_fig, use_container_width=True)
 
     st.markdown("**发布门禁**")
     col1, col2, col3, col4 = st.columns(4)
@@ -1562,6 +1727,36 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
         st.info("缺少吞吐或并发字段，无法做容量估算。")
     else:
         st.dataframe(capacity, use_container_width=True, hide_index=True)
+        curve = go.Figure()
+        curve.add_trace(
+            go.Scatter(
+                x=capacity["目标吞吐"],
+                y=capacity["建议CPU核数"],
+                mode="lines+markers",
+                name="建议CPU核数",
+                line=dict(color="#1f77b4"),
+            )
+        )
+        if "内存需求(GB)" in capacity and capacity["内存需求(GB)"].notna().any():
+            curve.add_trace(
+                go.Scatter(
+                    x=capacity["目标吞吐"],
+                    y=capacity["内存需求(GB)"],
+                    mode="lines+markers",
+                    name="内存需求(GB)",
+                    yaxis="y2",
+                    line=dict(color="#2ca02c"),
+                )
+            )
+        curve.update_layout(
+            title="容量曲线",
+            xaxis=dict(title="目标吞吐"),
+            yaxis=dict(title="建议CPU核数"),
+            yaxis2=dict(title="内存需求(GB)", overlaying="y", side="right"),
+            height=420,
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        st.plotly_chart(curve, use_container_width=True)
 
 
 def render_alerts(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric]) -> None:
@@ -1774,6 +1969,28 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
             use_container_width=True,
             hide_index=True,
         )
+
+    heatmap_data = version_regression_heatmap_data(stats, metrics, baseline_source, stat_name)
+    if not heatmap_data.empty:
+        st.markdown("**版本退化热力图**")
+        heatmap_pivot = heatmap_data.pivot(index="场景标识", columns="指标", values="退化幅度(%)")
+        heatmap = go.Figure(
+            data=go.Heatmap(
+                z=heatmap_pivot.values,
+                x=heatmap_pivot.columns,
+                y=heatmap_pivot.index,
+                colorscale="RdYlGn_r",
+                zmid=0,
+                colorbar=dict(title="退化幅度(%)"),
+                hovertemplate="场景=%{y}<br>指标=%{x}<br>退化幅度=%{z:.2f}%<extra></extra>",
+            )
+        )
+        heatmap.update_layout(
+            title=f"相对 {baseline_source} 的{stat_labels[stat_name]}退化幅度",
+            height=max(360, 40 * len(heatmap_pivot.index) + 140),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        st.plotly_chart(heatmap, use_container_width=True)
 
     long_data = stats[["source", "scene", column]].rename(columns={column: "值"})
     fig = px.bar(long_data, x="scene", y="值", color="source", barmode="group", title=f"不同数据源 {metric.label}{stat_labels[stat_name]} 对比")
