@@ -2266,8 +2266,7 @@ def ensure_sample_file() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="应用资源消耗分析", page_icon="📈", layout="wide")
-    st.title("应用资源消耗分析")
+    st.set_page_config(page_title="时序指标分析", page_icon="📈", layout="wide")
 
     with st.sidebar:
         st.header("数据源")
@@ -2297,6 +2296,11 @@ def main() -> None:
             value=config_analysis_text(imported_config, "group_label", "分组" if analysis_mode == GENERIC_MODE else "场景"),
             help="用于描述 Excel 中每个数据 sheet 的含义，例如场景、设备、工况、批次或实验组。",
         )
+
+    page_title = "通用时序分析" if analysis_mode == GENERIC_MODE else "应用资源消耗分析"
+    st.title(page_title)
+    if analysis_mode == GENERIC_MODE:
+        st.caption(f"当前模式：通用时序；每个数据 sheet 作为一个{group_label}分组。")
         use_sample = not uploaded_files
         if use_sample:
             ensure_sample_file()
