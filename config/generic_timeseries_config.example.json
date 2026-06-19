@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "mode": "generic_timeseries",
+  "fields": {
+    "timestamp": [
+      "采样时间",
+      "recorded_at",
+      "time"
+    ]
+  },
+  "analysis": {
+    "mode": "generic_timeseries",
+    "group_label": "设备",
+    "warmup_minutes": 0
+  },
+  "metrics": {
+    "温度": {
+      "label": "温度",
+      "unit": "℃",
+      "threshold": 80,
+      "direction": "higher"
+    },
+    "湿度": {
+      "label": "湿度",
+      "unit": "%",
+      "threshold": 20,
+      "direction": "lower"
+    },
+    "压力": {
+      "label": "压力",
+      "unit": "kPa",
+      "threshold": 120,
+      "direction": "higher"
+    },
+    "电压": {
+      "label": "电压",
+      "unit": "V",
+      "threshold": 10,
+      "direction": "lower"
+    }
+  }
+}

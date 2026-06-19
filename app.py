@@ -14,6 +14,9 @@ import streamlit as st
 
 
 SAMPLE_FILE = Path("data/sample_resource_consumption.xlsx")
+PERFORMANCE_MODE = "应用性能"
+GENERIC_MODE = "通用时序"
+ANALYSIS_MODES = (PERFORMANCE_MODE, GENERIC_MODE)
 
 TIME_KEYS = ("时间", "timestamp", "time", "date")
 CPU_KEYS = ("cpu", "CPU")
@@ -234,8 +237,39 @@ def normalize_scene(df: pd.DataFrame, scene_name: str, source_name: str, field_a
     return normalized
 
 
+def normalize_generic_timeseries(df: pd.DataFrame, group_name: str, source_name: str, field_aliases: dict[str, tuple[str, ...]]) -> pd.DataFrame:
+    columns = [str(column) for column in df.columns]
+    df = df.copy()
+    df.columns = columns
+
+    timestamp_column = find_column(columns, TIME_KEYS, aliases=field_aliases.get("timestamp", ()))
+    normalized = pd.DataFrame(index=df.index)
+    if timestamp_column is None:
+        normalized["timestamp"] = pd.NaT
+        used_sources = set()
+    else:
+        normalized["timestamp"] = pd.to_datetime(df[timestamp_column], errors="coerce")
+        used_sources = {timestamp_column}
+
+    for column in columns:
+        if column in used_sources:
+            continue
+        if is_numeric_like(df[column]):
+            normalized[dynamic_metric_key(column)] = pd.to_numeric(df[column], errors="coerce")
+
+    normalized["scene"] = group_name
+    normalized["source"] = source_name
+    normalized = normalized.dropna(subset=["timestamp"], how="all")
+    return normalized
+
+
 @st.cache_data(show_spinner=False)
-def load_single_workbook(source_name: str, uploaded_file: bytes | None, field_alias_items: tuple[tuple[str, tuple[str, ...]], ...]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_single_workbook(
+    source_name: str,
+    uploaded_file: bytes | None,
+    field_alias_items: tuple[tuple[str, tuple[str, ...]], ...],
+    analysis_mode: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     field_aliases = dict(field_alias_items)
     source: str | BinaryIO = str(SAMPLE_FILE) if uploaded_file is None else BytesIO(uploaded_file)
     workbook = pd.ExcelFile(source)
@@ -248,19 +282,26 @@ def load_single_workbook(source_name: str, uploaded_file: bytes | None, field_al
     for sheet_name in workbook.sheet_names[1:]:
         raw = pd.read_excel(workbook, sheet_name=sheet_name)
         if not raw.empty:
-            scenes.append(normalize_scene(raw, sheet_name, source_name, field_aliases))
+            if analysis_mode == GENERIC_MODE:
+                scenes.append(normalize_generic_timeseries(raw, sheet_name, source_name, field_aliases))
+            else:
+                scenes.append(normalize_scene(raw, sheet_name, source_name, field_aliases))
 
     data = pd.concat(scenes, ignore_index=True) if scenes else pd.DataFrame()
     return system_info, data
 
 
-def load_workbooks(files: tuple[tuple[str, bytes | None], ...], field_aliases: dict[str, tuple[str, ...]]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_workbooks(
+    files: tuple[tuple[str, bytes | None], ...],
+    field_aliases: dict[str, tuple[str, ...]],
+    analysis_mode: str = PERFORMANCE_MODE,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     # 多文件上传时，每个 Excel 文件名作为 source，后续可用于版本/批次对比。
     systems = []
     frames = []
     field_alias_items = tuple(sorted(field_aliases.items()))
     for source_name, payload in files:
-        system_info, data = load_single_workbook(source_name, payload, field_alias_items)
+        system_info, data = load_single_workbook(source_name, payload, field_alias_items, analysis_mode)
         if not system_info.empty:
             systems.append(system_info)
         if not data.empty:
@@ -1107,6 +1148,34 @@ def build_conclusions(data: pd.DataFrame, thresholds: dict[str, float], slope_th
     return conclusions
 
 
+def build_generic_conclusions(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> list[str]:
+    conclusions = []
+    if data.empty:
+        return ["未读取到可分析的时序数据。"]
+    alerts = count_alerts(data, thresholds, metrics)
+    if alerts:
+        conclusions.append(f"当前阈值下共有 {alerts} 个超阈采样点，建议查看“异常”页定位时间和分组。")
+        alert_summary = alert_continuity_summary(data, thresholds, metrics)
+        if not alert_summary.empty:
+            top_ratio = alert_summary.iloc[0]
+            conclusions.append(
+                f"超阈占比最高的是 {top_ratio['数据源']} / {top_ratio['场景']} 的 {top_ratio['指标']}，"
+                f"占比 {top_ratio['超阈占比(%)']:.2f}%。"
+            )
+    else:
+        conclusions.append("当前阈值下未发现超阈采样点。")
+
+    for metric in metrics:
+        if metric.key not in data or data[metric.key].dropna().empty:
+            continue
+        idx = data[metric.key].idxmax()
+        row = data.loc[idx]
+        conclusions.append(
+            f"{metric.label}峰值出现在 {row['source']} / {row['scene']}，峰值为 {format_value(row[metric.key], metric.unit)}。"
+        )
+    return conclusions
+
+
 def dataframe_to_markdown(df: pd.DataFrame) -> str:
     if df.empty:
         return ""
@@ -1214,6 +1283,41 @@ def build_report_markdown(
     return "\n".join(lines)
 
 
+def build_generic_report_markdown(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric], group_label: str) -> str:
+    summary = summarize(data, thresholds, metrics)
+    trends = trend_analysis(data, metrics)
+    alert_summary = alert_continuity_summary(data, thresholds, metrics)
+    conclusions = build_generic_conclusions(data, thresholds, metrics)
+    lines = [
+        "# 通用时序分析报告",
+        "",
+        "## 分析结论",
+        "",
+        *[f"- {item}" for item in conclusions],
+        "",
+        "## 汇总数据",
+        "",
+        dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。",
+        "",
+        "## 告警持续性",
+        "",
+        dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
+        "",
+        "## 全指标趋势斜率",
+        "",
+        dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。",
+        "",
+        "## 分析口径",
+        "",
+        f"- {group_label}：由 Excel sheet 名提供。",
+        "- 均值 / 峰值 / P90 / P95 / P99：用于观察整体水平、高水位和尾部风险。",
+        "- 超阈占比：超阈采样点数量 / 有效采样点数量。",
+        "- 最大连续超阈：同一指标连续处于超阈状态的最长时间。",
+        "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟。",
+    ]
+    return "\n".join(lines)
+
+
 def build_report_html(markdown_text: str) -> str:
     body = markdown_text
     replacements = {
@@ -1269,6 +1373,17 @@ def config_analysis_value(config: dict, key: str, default: float) -> float:
         return default
 
 
+def config_analysis_text(config: dict, key: str, default: str) -> str:
+    analysis = config.get("analysis", {})
+    value = analysis.get(key, default)
+    return str(value).strip() if str(value).strip() else default
+
+
+def config_analysis_mode(config: dict) -> str:
+    value = config.get("mode", config.get("analysis", {}).get("mode", PERFORMANCE_MODE))
+    return GENERIC_MODE if str(value).strip().lower() in ("generic", "generic_timeseries", "通用时序") else PERFORMANCE_MODE
+
+
 def metric_config_entry(config: dict, metric: Metric) -> dict:
     metric_configs = config.get("metrics", {})
     candidates = [metric.key, metric.label]
@@ -1297,7 +1412,10 @@ def normalize_config_direction(value: object, default: bool) -> bool:
 def configured_metric_from_import(config: dict, metric: Metric) -> Metric:
     entry = metric_config_entry(config, metric)
     higher_is_worse = normalize_config_direction(entry.get("direction"), metric.higher_is_worse)
-    return replace(metric, higher_is_worse=higher_is_worse)
+    label = str(entry.get("label", metric.label)).strip() or metric.label
+    unit = str(entry.get("unit", metric.unit)).strip()
+    threshold_label = str(entry.get("threshold_label", f"{label} 告警阈值")).strip()
+    return replace(metric, label=label, unit=unit, threshold_label=threshold_label, higher_is_worse=higher_is_worse)
 
 
 def threshold_from_import(config: dict, metric: Metric) -> float:
@@ -1315,11 +1433,16 @@ def build_settings_config(
     warmup_minutes: float,
     metrics: list[Metric],
     thresholds: dict[str, float],
+    analysis_mode: str = PERFORMANCE_MODE,
+    group_label: str = "场景",
 ) -> dict:
     return {
         "version": 1,
+        "mode": "generic_timeseries" if analysis_mode == GENERIC_MODE else "performance",
         "fields": {field: list(aliases) for field, aliases in field_aliases.items() if aliases},
         "analysis": {
+            "mode": "generic_timeseries" if analysis_mode == GENERIC_MODE else "performance",
+            "group_label": group_label,
             "memory_leak_slope_threshold": slope_threshold,
             "warmup_minutes": warmup_minutes,
         },
@@ -2113,6 +2236,29 @@ def render_report(
     st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
 
 
+def render_generic_report(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric], group_label: str) -> None:
+    st.subheader("分析报告导出")
+    conclusions = build_generic_conclusions(data, thresholds, metrics)
+    for item in conclusions:
+        st.write(f"- {item}")
+
+    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label)
+    html_report = build_report_html(markdown_report)
+    st.download_button(
+        "下载 Markdown 报告",
+        markdown_report.encode("utf-8-sig"),
+        file_name="timeseries_report.md",
+        mime="text/markdown",
+    )
+    st.download_button(
+        "下载 HTML 报告",
+        html_report.encode("utf-8-sig"),
+        file_name="timeseries_report.html",
+        mime="text/html",
+    )
+    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
+
+
 def ensure_sample_file() -> None:
     if not SAMPLE_FILE.exists():
         st.error("未找到示例数据。请先运行 `python generate_sample_data.py`。")
@@ -2139,6 +2285,18 @@ def main() -> None:
         imported_config = parse_json_config(settings_file)
         if imported_config:
             st.caption("已加载分析配置；未匹配的指标会自动忽略。")
+        default_mode = config_analysis_mode(imported_config)
+        analysis_mode = st.selectbox(
+            "分析模式",
+            ANALYSIS_MODES,
+            index=ANALYSIS_MODES.index(default_mode),
+            help="应用性能模式会识别 CPU、内存、QPS 等性能语义；通用时序模式只识别时间戳和数值指标，适合温度、压力、质量测量等通用采样记录。",
+        )
+        group_label = st.text_input(
+            "分组名称",
+            value=config_analysis_text(imported_config, "group_label", "分组" if analysis_mode == GENERIC_MODE else "场景"),
+            help="用于描述 Excel 中每个数据 sheet 的含义，例如场景、设备、工况、批次或实验组。",
+        )
         use_sample = not uploaded_files
         if use_sample:
             ensure_sample_file()
@@ -2184,7 +2342,7 @@ def main() -> None:
         files = tuple((file.name, file.getvalue()) for file in uploaded_files)
 
     # 加载 Excel 后先得到完整原始采样数据，再按稳定区间做分析视图。
-    system_info, raw_data = load_workbooks(files, field_aliases)
+    system_info, raw_data = load_workbooks(files, field_aliases, analysis_mode)
     data = apply_stable_window(raw_data, warmup_minutes)
     if data.empty:
         st.warning("未读取到场景数据。请确认第一个 sheet 为系统信息，其余 sheet 分别为轻载、重载等场景采样数据。")
@@ -2193,7 +2351,7 @@ def main() -> None:
 
     sources = list(data["source"].dropna().unique())
     scenes = list(data["scene"].dropna().unique())
-    # 指标发现发生在数据加载之后：核心指标优先，其他数值列自动变成动态扩展指标。
+    # 指标发现发生在数据加载之后：性能模式核心指标优先；通用模式中所有数值列都是动态指标。
     metrics = discover_metrics(data)
     with st.sidebar:
         st.header("阈值")
@@ -2236,7 +2394,7 @@ def main() -> None:
                 thresholds[metric.key] = threshold_value
         metrics = configured_metrics
 
-        current_config = build_settings_config(field_aliases, float(slope_threshold), float(warmup_minutes), metrics, thresholds)
+        current_config = build_settings_config(field_aliases, float(slope_threshold), float(warmup_minutes), metrics, thresholds, analysis_mode, group_label)
         st.download_button(
             "导出当前分析配置",
             config_to_json_bytes(current_config),
@@ -2253,10 +2411,10 @@ def main() -> None:
             help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
         )
         selected_scenes = st.multiselect(
-            "场景",
+            group_label,
             scenes,
             default=scenes,
-            help="选择要参与分析的测试场景。场景名来自 Excel 的 sheet 名。",
+            help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
         )
         available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
         selected_metrics = st.multiselect(
@@ -2275,55 +2433,86 @@ def main() -> None:
     config_table = pd.DataFrame()
     config_notes: list[str] = []
 
-    tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "决策", "分布", "异常", "报告", "系统信息", "原始数据"])
-    with tabs[0]:
-        render_overview(filtered_data, thresholds, metrics)
-    with tabs[1]:
-        render_trend(filtered_data, selected_scenes, selected_metrics, thresholds, metrics)
-    with tabs[2]:
-        render_comparison(filtered_data, selected_scenes, metrics)
-    with tabs[3]:
-        config_table, config_notes = render_configuration_recommendation(filtered_data, slope_threshold)
-    with tabs[4]:
-        render_baseline_growth(filtered_data, selected_scenes, metrics)
-    with tabs[5]:
-        render_leak_detection(filtered_data, selected_scenes, slope_threshold, metrics)
-    with tabs[6]:
-        render_version_compare(filtered_data, selected_scenes, metrics)
-    with tabs[7]:
-        render_efficiency(filtered_data, selected_scenes)
-    with tabs[8]:
-        render_decision(filtered_data, selected_scenes, thresholds, metrics, slope_threshold)
-    with tabs[9]:
-        render_distribution(filtered_data, selected_scenes, metrics)
-    with tabs[10]:
-        render_alerts(filtered_data, selected_scenes, thresholds, metrics)
-    with tabs[11]:
-        if config_table.empty:
-            config_table, config_notes = configuration_recommendation(
-                filtered_data,
-                test_cpu_cores=8,
-                target_cpu_utilization=70.0,
-                minimum_cpu_cores=2,
-                system_reserved_memory_gb=2.0,
-                minimum_memory_gb=4,
-                minimum_free_disk_gb=10,
-                recommendation_factor=1.5,
-                slope_threshold=slope_threshold,
+    if analysis_mode == GENERIC_MODE:
+        tabs = st.tabs(["概览", "趋势", "对比", "基准增长", "版本对比", "分布", "异常", "报告", "元信息", "原始数据"])
+        with tabs[0]:
+            render_overview(filtered_data, thresholds, metrics)
+        with tabs[1]:
+            render_trend(filtered_data, selected_scenes, selected_metrics, thresholds, metrics)
+        with tabs[2]:
+            render_comparison(filtered_data, selected_scenes, metrics)
+        with tabs[3]:
+            render_baseline_growth(filtered_data, selected_scenes, metrics)
+        with tabs[4]:
+            render_version_compare(filtered_data, selected_scenes, metrics)
+        with tabs[5]:
+            render_distribution(filtered_data, selected_scenes, metrics)
+        with tabs[6]:
+            render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+        with tabs[7]:
+            render_generic_report(filtered_data, thresholds, metrics, group_label)
+        with tabs[8]:
+            selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
+            render_system_info(selected_system)
+        with tabs[9]:
+            filtered = filtered_data.copy()
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
+            st.download_button(
+                "下载当前筛选数据 CSV",
+                filtered.to_csv(index=False).encode("utf-8-sig"),
+                file_name="timeseries_filtered.csv",
+                mime="text/csv",
             )
-        render_report(filtered_data, thresholds, slope_threshold, metrics, config_table, config_notes)
-    with tabs[12]:
-        selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
-        render_system_info(selected_system)
-    with tabs[13]:
-        filtered = filtered_data.copy()
-        st.dataframe(filtered, use_container_width=True, hide_index=True)
-        st.download_button(
-            "下载当前筛选数据 CSV",
-            filtered.to_csv(index=False).encode("utf-8-sig"),
-            file_name="resource_metrics_filtered.csv",
-            mime="text/csv",
-        )
+    else:
+        tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "决策", "分布", "异常", "报告", "系统信息", "原始数据"])
+        with tabs[0]:
+            render_overview(filtered_data, thresholds, metrics)
+        with tabs[1]:
+            render_trend(filtered_data, selected_scenes, selected_metrics, thresholds, metrics)
+        with tabs[2]:
+            render_comparison(filtered_data, selected_scenes, metrics)
+        with tabs[3]:
+            config_table, config_notes = render_configuration_recommendation(filtered_data, slope_threshold)
+        with tabs[4]:
+            render_baseline_growth(filtered_data, selected_scenes, metrics)
+        with tabs[5]:
+            render_leak_detection(filtered_data, selected_scenes, slope_threshold, metrics)
+        with tabs[6]:
+            render_version_compare(filtered_data, selected_scenes, metrics)
+        with tabs[7]:
+            render_efficiency(filtered_data, selected_scenes)
+        with tabs[8]:
+            render_decision(filtered_data, selected_scenes, thresholds, metrics, slope_threshold)
+        with tabs[9]:
+            render_distribution(filtered_data, selected_scenes, metrics)
+        with tabs[10]:
+            render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+        with tabs[11]:
+            if config_table.empty:
+                config_table, config_notes = configuration_recommendation(
+                    filtered_data,
+                    test_cpu_cores=8,
+                    target_cpu_utilization=70.0,
+                    minimum_cpu_cores=2,
+                    system_reserved_memory_gb=2.0,
+                    minimum_memory_gb=4,
+                    minimum_free_disk_gb=10,
+                    recommendation_factor=1.5,
+                    slope_threshold=slope_threshold,
+                )
+            render_report(filtered_data, thresholds, slope_threshold, metrics, config_table, config_notes)
+        with tabs[12]:
+            selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
+            render_system_info(selected_system)
+        with tabs[13]:
+            filtered = filtered_data.copy()
+            st.dataframe(filtered, use_container_width=True, hide_index=True)
+            st.download_button(
+                "下载当前筛选数据 CSV",
+                filtered.to_csv(index=False).encode("utf-8-sig"),
+                file_name="resource_metrics_filtered.csv",
+                mime="text/csv",
+            )
 
 
 if __name__ == "__main__":

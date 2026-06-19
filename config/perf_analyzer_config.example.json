@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "mode": "performance",
   "fields": {
     "cpu_percent": [
       "CPU使用率",
@@ -19,6 +20,8 @@
     ]
   },
   "analysis": {
+    "mode": "performance",
+    "group_label": "场景",
     "memory_leak_slope_threshold": 2.0,
     "warmup_minutes": 1.0
   },
