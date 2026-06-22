@@ -18,24 +18,32 @@
       "label": "温度",
       "unit": "℃",
       "threshold": 80,
+      "lower_threshold": 18,
+      "upper_threshold": 75,
       "direction": "higher"
     },
     "湿度": {
       "label": "湿度",
       "unit": "%",
       "threshold": 20,
+      "lower_threshold": 20,
+      "upper_threshold": 75,
       "direction": "lower"
     },
     "压力": {
       "label": "压力",
       "unit": "kPa",
       "threshold": 120,
+      "lower_threshold": 85,
+      "upper_threshold": 115,
       "direction": "higher"
     },
     "电压": {
       "label": "电压",
       "unit": "V",
       "threshold": 10,
+      "lower_threshold": 10.5,
+      "upper_threshold": 13.5,
       "direction": "lower"
     }
   }

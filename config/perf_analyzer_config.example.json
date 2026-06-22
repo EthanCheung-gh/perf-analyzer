@@ -29,16 +29,22 @@
     "cpu_percent": {
       "label": "CPU",
       "threshold": 80,
+      "lower_threshold": 0,
+      "upper_threshold": 80,
       "direction": "higher"
     },
     "memory_mb": {
       "label": "内存占用",
       "threshold": 2048,
+      "lower_threshold": 0,
+      "upper_threshold": 2048,
       "direction": "higher"
     },
     "memory_percent": {
       "label": "内存占比",
       "threshold": 70,
+      "lower_threshold": 0,
+      "upper_threshold": 70,
       "direction": "higher"
     },
     "threads": {
@@ -74,6 +80,8 @@
     "fps": {
       "label": "FPS",
       "threshold": 45,
+      "lower_threshold": 45,
+      "upper_threshold": 120,
       "direction": "lower"
     },
     "gc_time_ms": {
