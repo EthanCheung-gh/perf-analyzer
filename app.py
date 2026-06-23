@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
@@ -122,10 +123,33 @@ SEMANTIC_METRICS = [
 ]
 STANDARD_METRICS = [*CORE_METRICS, *SEMANTIC_METRICS]
 META_COLUMNS = {"timestamp", "source", "scene", "display_scene"}
+CONFIG_TOP_LEVEL_KEYS = {"version", "mode", "fields", "analysis", "metrics", "notes", "description", "_comment"}
+CONFIG_ANALYSIS_KEYS = {"mode", "group_label", "memory_leak_slope_threshold", "warmup_minutes", "notes", "description", "_comment"}
+CONFIG_METRIC_KEYS = {
+    "label",
+    "unit",
+    "threshold",
+    "threshold_label",
+    "direction",
+    "lower_threshold",
+    "upper_threshold",
+    "lower",
+    "upper",
+    "min_threshold",
+    "max_threshold",
+    "notes",
+    "description",
+    "_comment",
+}
 
 
 def clean_name(value: object) -> str:
     return str(value).strip().replace("（", "(").replace("）", ")").lower()
+
+
+def safe_filename(value: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff._-]+", "_", str(value).strip())
+    return normalized.strip("_") or "chart"
 
 
 def parse_aliases(value: str) -> tuple[str, ...]:
@@ -352,6 +376,66 @@ def interval_alert_mask(series: pd.Series, lower: float | None, upper: float | N
     return mask
 
 
+def metric_alert_bounds(threshold_bounds: dict[str, tuple[float | None, float | None]] | None, metric: Metric) -> tuple[float | None, float | None]:
+    if not threshold_bounds:
+        return None, None
+    return threshold_bounds.get(metric.key, (None, None))
+
+
+def metric_alert_mask(
+    series: pd.Series,
+    metric: Metric,
+    thresholds: dict[str, float],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> pd.Series:
+    lower, upper = metric_alert_bounds(threshold_bounds, metric)
+    if lower is not None or upper is not None:
+        return interval_alert_mask(series, lower, upper)
+    if metric.key not in thresholds:
+        return pd.Series(False, index=series.index)
+    return alert_mask(series, thresholds[metric.key], metric.higher_is_worse)
+
+
+def metric_alert_rule_text(
+    metric: Metric,
+    thresholds: dict[str, float],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> str:
+    lower, upper = metric_alert_bounds(threshold_bounds, metric)
+    if lower is not None and upper is not None:
+        return f"{format_value(lower, metric.unit)} - {format_value(upper, metric.unit)}"
+    if lower is not None:
+        return f">= {format_value(lower, metric.unit)}"
+    if upper is not None:
+        return f"<= {format_value(upper, metric.unit)}"
+    threshold = thresholds.get(metric.key, metric.default_threshold)
+    operator = "<=" if metric.higher_is_worse else ">="
+    return f"{operator} {format_value(threshold, metric.unit)}"
+
+
+def metric_alert_deviation_percent(
+    values: pd.Series,
+    metric: Metric,
+    thresholds: dict[str, float],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> pd.Series:
+    lower, upper = metric_alert_bounds(threshold_bounds, metric)
+    result = pd.Series(np.nan, index=values.index, dtype=float)
+    if lower is not None:
+        low_mask = values < lower
+        denominator = abs(lower) if lower != 0 else np.nan
+        result.loc[low_mask] = (lower - values.loc[low_mask]).abs() / denominator * 100
+    if upper is not None:
+        high_mask = values > upper
+        denominator = abs(upper) if upper != 0 else np.nan
+        result.loc[high_mask] = (values.loc[high_mask] - upper).abs() / denominator * 100
+    if lower is None and upper is None and metric.key in thresholds:
+        threshold = thresholds[metric.key]
+        denominator = abs(threshold) if threshold != 0 else np.nan
+        result = (values - threshold).abs() / denominator * 100
+    return result
+
+
 def format_duration(minutes: float) -> str:
     if pd.isna(minutes):
         return "-"
@@ -377,11 +461,16 @@ def format_peak_offset(group: pd.DataFrame, metric_key: str) -> str:
     return format_duration(minutes)
 
 
-def max_continuous_alert_minutes(group: pd.DataFrame, metric: Metric, threshold: float) -> float:
+def max_continuous_alert_minutes(
+    group: pd.DataFrame,
+    metric: Metric,
+    thresholds: dict[str, float],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> float:
     values = group[["timestamp", metric.key]].dropna().sort_values("timestamp")
     if values.empty:
         return 0.0
-    alerts = alert_mask(values[metric.key], threshold, metric.higher_is_worse).to_numpy()
+    alerts = metric_alert_mask(values[metric.key], metric, thresholds, threshold_bounds).to_numpy()
     if not alerts.any():
         return 0.0
 
@@ -400,6 +489,92 @@ def max_continuous_alert_minutes(group: pd.DataFrame, metric: Metric, threshold:
             max_minutes = max(max_minutes, span + sample_minutes)
             run_start = None
     return float(max_minutes)
+
+
+def alert_segments(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> pd.DataFrame:
+    rows = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        for metric in metrics:
+            if metric.key not in group:
+                continue
+            values = group[["timestamp", metric.key]].dropna().sort_values("timestamp").reset_index(drop=True)
+            if values.empty:
+                continue
+
+            alert_series = metric_alert_mask(values[metric.key], metric, thresholds, threshold_bounds).reset_index(drop=True)
+            if not alert_series.any():
+                continue
+
+            diffs = values["timestamp"].diff().dropna().dt.total_seconds() / 60
+            sample_minutes = float(diffs.median()) if not diffs.empty and diffs.median() > 0 else 0.0
+            max_gap_minutes = sample_minutes * 1.5 if sample_minutes > 0 else 0.0
+            alert_indexes = [index for index, is_alert in enumerate(alert_series) if bool(is_alert)]
+
+            segments: list[list[int]] = []
+            current: list[int] = []
+            previous_index: int | None = None
+            for index in alert_indexes:
+                if previous_index is None:
+                    current = [index]
+                else:
+                    gap_minutes = (values.loc[index, "timestamp"] - values.loc[previous_index, "timestamp"]).total_seconds() / 60
+                    if max_gap_minutes <= 0 or gap_minutes <= max_gap_minutes:
+                        current.append(index)
+                    else:
+                        segments.append(current)
+                        current = [index]
+                previous_index = index
+            if current:
+                segments.append(current)
+
+            lower, upper = metric_alert_bounds(threshold_bounds, metric)
+            for sequence, indexes in enumerate(segments, start=1):
+                segment = values.loc[indexes].copy()
+                start_time = segment["timestamp"].iloc[0]
+                end_time = segment["timestamp"].iloc[-1]
+                duration_minutes = (end_time - start_time).total_seconds() / 60 + sample_minutes
+                segment_values = segment[metric.key]
+                if lower is not None or upper is not None:
+                    high_count = int((segment_values > upper).sum()) if upper is not None else 0
+                    low_count = int((segment_values < lower).sum()) if lower is not None else 0
+                    if high_count and low_count:
+                        alert_type = "上下限均触发"
+                    elif high_count:
+                        alert_type = "高于上限"
+                    elif low_count:
+                        alert_type = "低于下限"
+                    else:
+                        alert_type = "区间异常"
+                else:
+                    alert_type = "高于阈值" if metric.higher_is_worse else "低于阈值"
+                rows.append(
+                    {
+                        "数据源": source,
+                        "场景": scene,
+                        "指标key": metric.key,
+                        "指标": metric.label,
+                        "异常段": sequence,
+                        "开始时间": start_time,
+                        "结束时间": end_time,
+                        "持续时长": format_duration(duration_minutes),
+                        "持续时长(分钟)": float(duration_minutes),
+                        "异常点数": len(segment),
+                        "最小值": float(segment_values.min()),
+                        "最大值": float(segment_values.max()),
+                        "均值": float(segment_values.mean()),
+                        "正常区间/阈值": metric_alert_rule_text(metric, thresholds, threshold_bounds),
+                        "告警类型": alert_type,
+                    }
+                )
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return result
+    return result.sort_values(["持续时长(分钟)", "异常点数"], ascending=False)
 
 
 def format_value(value: float, unit: str = "") -> str:
@@ -434,7 +609,35 @@ def metric_by_key(metrics: list[Metric], key: str) -> Metric:
     return next(metric for metric in metrics if metric.key == key)
 
 
-def summarize(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> pd.DataFrame:
+def safe_option_index(options: list[str], preferred: str | None, default: int = 0) -> int:
+    if preferred in options:
+        return options.index(preferred)
+    return default if options else 0
+
+
+def sanitize_select_state(key: str, options: list[str]) -> None:
+    if key in st.session_state and st.session_state[key] not in options:
+        del st.session_state[key]
+
+
+def sanitize_multiselect_state(key: str, options: list[str]) -> None:
+    if key not in st.session_state:
+        return
+    selected = st.session_state[key]
+    if not isinstance(selected, list):
+        del st.session_state[key]
+        return
+    valid = [item for item in selected if item in options]
+    if valid != selected:
+        st.session_state[key] = valid
+
+
+def summarize(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> pd.DataFrame:
     # 汇总统计只依赖 metrics 列表，因此核心指标和动态扩展指标走同一套计算逻辑。
     rows = []
     group_cols = ["source", "scene"] if data["source"].nunique() > 1 else ["scene"]
@@ -469,11 +672,12 @@ def summarize(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Me
             slope, _ = linear_slope_per_minute(group, metric.key)
             row[f"{metric.label}趋势斜率/分钟"] = slope
             row[f"{metric.label}峰值发生在"] = format_peak_offset(group, metric.key)
-            if metric.key in thresholds:
-                mask = alert_mask(values, thresholds[metric.key], metric.higher_is_worse)
+            if metric.key in thresholds or any(bound is not None for bound in metric_alert_bounds(threshold_bounds, metric)):
+                mask = metric_alert_mask(values, metric, thresholds, threshold_bounds)
                 row[f"{metric.label}超阈次数"] = int(mask.sum())
                 row[f"{metric.label}超阈占比(%)"] = float(mask.mean() * 100)
-                max_minutes = max_continuous_alert_minutes(group, metric, thresholds[metric.key])
+                row[f"{metric.label}正常区间/阈值"] = metric_alert_rule_text(metric, thresholds, threshold_bounds)
+                max_minutes = max_continuous_alert_minutes(group, metric, thresholds, threshold_bounds)
                 row[f"{metric.label}最大连续超阈"] = format_duration(max_minutes)
         rows.append(row)
     return pd.DataFrame(rows)
@@ -594,25 +798,34 @@ def trend_analysis(data: pd.DataFrame, metrics: list[Metric]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def alert_continuity_summary(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> pd.DataFrame:
+def alert_continuity_summary(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> pd.DataFrame:
     rows = []
     for (source, scene), group in data.groupby(["source", "scene"], sort=False):
         for metric in metrics:
-            if metric.key not in thresholds or metric.key not in group:
+            if metric.key not in group:
+                continue
+            has_rule = metric.key in thresholds or any(bound is not None for bound in metric_alert_bounds(threshold_bounds, metric))
+            if not has_rule:
                 continue
             values = group[metric.key].dropna()
             if values.empty:
                 continue
-            mask = alert_mask(values, thresholds[metric.key], metric.higher_is_worse)
+            mask = metric_alert_mask(values, metric, thresholds, threshold_bounds)
             alert_count = int(mask.sum())
             if alert_count == 0:
                 continue
-            max_minutes = max_continuous_alert_minutes(group, metric, thresholds[metric.key])
+            max_minutes = max_continuous_alert_minutes(group, metric, thresholds, threshold_bounds)
             rows.append(
                 {
                     "数据源": source,
                     "场景": scene,
                     "指标": metric.label,
+                    "正常区间/阈值": metric_alert_rule_text(metric, thresholds, threshold_bounds),
                     "超阈次数": alert_count,
                     "超阈占比(%)": float(mask.mean() * 100),
                     "最大连续超阈": format_duration(max_minutes),
@@ -726,8 +939,9 @@ def scene_decision_analysis(
     thresholds: dict[str, float],
     metrics: list[Metric],
     slope_threshold: float,
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
 ) -> pd.DataFrame:
-    alerts = alert_continuity_summary(data, thresholds, metrics)
+    alerts = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
     leaks = leak_analysis(data, slope_threshold)
     efficiency = resource_efficiency_analysis(data)
     rows = []
@@ -1118,14 +1332,20 @@ def configuration_recommendation(
     return pd.DataFrame(rows), notes
 
 
-def build_conclusions(data: pd.DataFrame, thresholds: dict[str, float], slope_threshold: float, metrics: list[Metric]) -> list[str]:
+def build_conclusions(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    slope_threshold: float,
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> list[str]:
     conclusions = []
     if data.empty:
         return ["未读取到可分析的场景数据。"]
-    alerts = count_alerts(data, thresholds, metrics)
+    alerts = count_alerts(data, thresholds, metrics, threshold_bounds)
     if alerts:
         conclusions.append(f"当前阈值下共有 {alerts} 个超阈采样点，建议优先查看“异常”页定位时间和场景。")
-        alert_summary = alert_continuity_summary(data, thresholds, metrics)
+        alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
         if not alert_summary.empty:
             top_ratio = alert_summary.iloc[0]
             top_duration = alert_summary.sort_values("最大连续超阈(分钟)", ascending=False).iloc[0]
@@ -1159,14 +1379,19 @@ def build_conclusions(data: pd.DataFrame, thresholds: dict[str, float], slope_th
     return conclusions
 
 
-def build_generic_conclusions(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> list[str]:
+def build_generic_conclusions(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> list[str]:
     conclusions = []
     if data.empty:
         return ["未读取到可分析的时序数据。"]
-    alerts = count_alerts(data, thresholds, metrics)
+    alerts = count_alerts(data, thresholds, metrics, threshold_bounds)
     if alerts:
         conclusions.append(f"当前阈值下共有 {alerts} 个超阈采样点，建议查看“异常”页定位时间和分组。")
-        alert_summary = alert_continuity_summary(data, thresholds, metrics)
+        alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
         if not alert_summary.empty:
             top_ratio = alert_summary.iloc[0]
             conclusions.append(
@@ -1207,15 +1432,17 @@ def build_report_markdown(
     thresholds: dict[str, float],
     slope_threshold: float,
     metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     config_table: pd.DataFrame | None = None,
     config_notes: list[str] | None = None,
 ) -> str:
-    summary = summarize(data, thresholds, metrics)
+    summary = summarize(data, thresholds, metrics, threshold_bounds)
     leaks = leak_analysis(data, slope_threshold)
     trends = trend_analysis(data, metrics)
-    alert_summary = alert_continuity_summary(data, thresholds, metrics)
+    alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
+    segments = alert_segments(data, thresholds, metrics, threshold_bounds)
     efficiency = resource_efficiency_analysis(data)
-    decisions = scene_decision_analysis(data, thresholds, metrics, slope_threshold)
+    decisions = scene_decision_analysis(data, thresholds, metrics, slope_threshold, threshold_bounds)
     gate_status, gate_rules = release_gate_analysis(
         decisions,
         max_allowed_level="中风险",
@@ -1225,7 +1452,7 @@ def build_report_markdown(
     )
     stability = stability_score_analysis(decisions)
     bottlenecks = bottleneck_hints(data, thresholds, metrics)
-    conclusions = build_conclusions(data, thresholds, slope_threshold, metrics)
+    conclusions = build_conclusions(data, thresholds, slope_threshold, metrics, threshold_bounds)
     lines = [
         "# 应用资源消耗分析报告",
         "",
@@ -1258,6 +1485,10 @@ def build_report_markdown(
         "",
         dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
         "",
+        "## 异常段",
+        "",
+        dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
+        "",
         "## 内存趋势检测",
         "",
         dataframe_to_markdown(leaks) if not leaks.empty else "无内存趋势数据。",
@@ -1281,7 +1512,7 @@ def build_report_markdown(
         "- 均值：场景内全部采样点平均值",
         "- 峰值：场景内最大采样值",
         "- P90 / P95 / P99：对应分位值，用于观察高水位和尾部风险",
-        "- 超阈次数：指标值大于侧边栏阈值的采样点数量",
+        "- 超阈次数：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量",
         "- 超阈占比：超阈采样点数量 / 有效采样点数量",
         "- 最大连续超阈：同一指标连续处于超阈状态的最长时间",
         "- 标准差 / IQR / 变异系数：用于观察资源波动性",
@@ -1294,11 +1525,18 @@ def build_report_markdown(
     return "\n".join(lines)
 
 
-def build_generic_report_markdown(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric], group_label: str) -> str:
-    summary = summarize(data, thresholds, metrics)
+def build_generic_report_markdown(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    group_label: str,
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> str:
+    summary = summarize(data, thresholds, metrics, threshold_bounds)
     trends = trend_analysis(data, metrics)
-    alert_summary = alert_continuity_summary(data, thresholds, metrics)
-    conclusions = build_generic_conclusions(data, thresholds, metrics)
+    alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
+    segments = alert_segments(data, thresholds, metrics, threshold_bounds)
+    conclusions = build_generic_conclusions(data, thresholds, metrics, threshold_bounds)
     lines = [
         "# 通用时序分析报告",
         "",
@@ -1314,6 +1552,10 @@ def build_generic_report_markdown(data: pd.DataFrame, thresholds: dict[str, floa
         "",
         dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
         "",
+        "## 异常段",
+        "",
+        dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
+        "",
         "## 全指标趋势斜率",
         "",
         dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。",
@@ -1322,7 +1564,7 @@ def build_generic_report_markdown(data: pd.DataFrame, thresholds: dict[str, floa
         "",
         f"- {group_label}：由 Excel sheet 名提供。",
         "- 均值 / 峰值 / P90 / P95 / P99：用于观察整体水平、高水位和尾部风险。",
-        "- 超阈占比：超阈采样点数量 / 有效采样点数量。",
+        "- 超阈占比：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量 / 有效采样点数量。",
         "- 最大连续超阈：同一指标连续处于超阈状态的最长时间。",
         "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟。",
     ]
@@ -1363,6 +1605,91 @@ def parse_json_config(uploaded_file: object | None) -> dict:
     except Exception as exc:
         st.sidebar.warning(f"配置文件读取失败：{exc}")
         return {}
+
+
+def validate_config(config: dict, metrics: list[Metric] | None = None) -> tuple[list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not config:
+        return errors, warnings
+    if not isinstance(config, dict):
+        return ["配置根节点必须是 JSON 对象。"], warnings
+
+    unknown_top = sorted(set(config) - CONFIG_TOP_LEVEL_KEYS)
+    if unknown_top:
+        warnings.append(f"未知顶层字段将被忽略：{', '.join(unknown_top)}。")
+
+    fields = config.get("fields", {})
+    if fields and not isinstance(fields, dict):
+        errors.append("fields 必须是对象，值可以是字符串或字符串数组。")
+    elif isinstance(fields, dict):
+        for field, aliases in fields.items():
+            if not isinstance(aliases, (str, list, tuple)):
+                warnings.append(f"fields.{field} 不是字符串或数组，已忽略。")
+
+    analysis = config.get("analysis", {})
+    if analysis and not isinstance(analysis, dict):
+        errors.append("analysis 必须是对象。")
+    elif isinstance(analysis, dict):
+        unknown_analysis = sorted(set(analysis) - CONFIG_ANALYSIS_KEYS)
+        if unknown_analysis:
+            warnings.append(f"analysis 中未知字段将被忽略：{', '.join(unknown_analysis)}。")
+        mode = str(config.get("mode", analysis.get("mode", ""))).strip().lower()
+        if mode and mode not in ("performance", "generic_timeseries", "generic", "应用性能", "通用时序"):
+            warnings.append("mode 未识别，将按应用性能模式处理。")
+        for key in ("memory_leak_slope_threshold", "warmup_minutes"):
+            if key in analysis and optional_float(analysis.get(key)) is None:
+                warnings.append(f"analysis.{key} 不是数字，将使用默认值。")
+
+    metric_configs = config.get("metrics", {})
+    if metric_configs and not isinstance(metric_configs, dict):
+        errors.append("metrics 必须是对象。")
+        return errors, warnings
+    if not isinstance(metric_configs, dict):
+        return errors, warnings
+
+    known_metric_keys: set[str] = set()
+    if metrics is not None:
+        for metric in metrics:
+            known_metric_keys.update({metric.key, metric.label})
+            if metric.key.startswith("extra::"):
+                known_metric_keys.add(dynamic_metric_label(metric.key))
+
+    for metric_name, entry in metric_configs.items():
+        if not isinstance(entry, dict):
+            warnings.append(f"metrics.{metric_name} 必须是对象，已忽略。")
+            continue
+        unknown_metric_keys = sorted(set(entry) - CONFIG_METRIC_KEYS)
+        if unknown_metric_keys:
+            warnings.append(f"metrics.{metric_name} 中未知字段将被忽略：{', '.join(unknown_metric_keys)}。")
+        direction = entry.get("direction")
+        if direction is not None and normalize_config_direction(direction, True) == normalize_config_direction("__invalid__", True):
+            text = str(direction).strip().lower()
+            if text not in ("higher", "high", "up", "越高越差", "高", "true", "lower", "low", "down", "越低越差", "低", "false"):
+                warnings.append(f"metrics.{metric_name}.direction 未识别，将使用默认方向。")
+        for key in ("threshold", "lower_threshold", "upper_threshold", "lower", "upper", "min_threshold", "max_threshold"):
+            if key in entry and optional_float(entry.get(key)) is None:
+                warnings.append(f"metrics.{metric_name}.{key} 不是数字，已忽略。")
+        lower = optional_float(entry.get("lower_threshold", entry.get("lower", entry.get("min_threshold"))))
+        upper = optional_float(entry.get("upper_threshold", entry.get("upper", entry.get("max_threshold"))))
+        if lower is not None and upper is not None and lower > upper:
+            warnings.append(f"metrics.{metric_name} 的 lower_threshold 大于 upper_threshold，页面会自动交换。")
+        if metrics is not None and metric_name not in known_metric_keys:
+            warnings.append(f"metrics.{metric_name} 当前数据未命中，会被忽略。")
+    return errors, warnings
+
+
+def render_config_validation(config: dict, metrics: list[Metric] | None = None) -> None:
+    errors, warnings = validate_config(config, metrics)
+    if not errors and not warnings:
+        if config:
+            st.sidebar.success("配置校验通过。")
+        return
+    with st.sidebar.expander("配置校验", expanded=bool(errors)):
+        for error in errors:
+            st.error(error)
+        for warning in warnings:
+            st.warning(warning)
 
 
 def config_field_aliases(config: dict, field: str) -> tuple[str, ...]:
@@ -1499,6 +1826,21 @@ def config_to_json_bytes(config: dict) -> bytes:
     return json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8-sig")
 
 
+def render_plotly_chart(fig: go.Figure, filename: str, *, height: int | None = None) -> None:
+    if height is not None:
+        fig.update_layout(height=height)
+    st.plotly_chart(fig, use_container_width=True)
+    html = fig.to_html(full_html=True, include_plotlyjs=True)
+    st.download_button(
+        "下载图表 HTML",
+        html.encode("utf-8-sig"),
+        file_name=f"{safe_filename(filename)}.html",
+        mime="text/html",
+        key=f"download_chart_{safe_filename(filename)}",
+        help="导出当前交互图表，适合离线查看或放入报告附件。",
+    )
+
+
 def render_system_info(system_info: pd.DataFrame) -> None:
     st.subheader("系统信息")
     if system_info.empty:
@@ -1507,19 +1849,24 @@ def render_system_info(system_info: pd.DataFrame) -> None:
     st.dataframe(system_info, use_container_width=True, hide_index=True)
 
 
-def render_overview(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> None:
+def render_overview(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> None:
     st.subheader("概览")
     cols = st.columns(5)
     cols[0].metric("场景数", data["scene"].nunique())
     cols[1].metric("样本数", f"{len(data):,}")
     cols[2].metric("CPU峰值", format_value(data["cpu_percent"].max(), "%") if "cpu_percent" in data else "-")
     cols[3].metric("内存峰值", format_value(data["memory_mb"].max(), "MB") if "memory_mb" in data else "-")
-    cols[4].metric("告警点", f"{count_alerts(data, thresholds, metrics):,}")
+    cols[4].metric("告警点", f"{count_alerts(data, thresholds, metrics, threshold_bounds):,}")
 
-    summary = summarize(data, thresholds, metrics)
+    summary = summarize(data, thresholds, metrics, threshold_bounds)
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    alert_summary = alert_continuity_summary(data, thresholds, metrics)
+    alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
     if not alert_summary.empty:
         st.markdown("**告警持续性摘要**")
         st.dataframe(
@@ -1529,14 +1876,16 @@ def render_overview(data: pd.DataFrame, thresholds: dict[str, float], metrics: l
         )
 
 
-def count_alerts(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric]) -> int:
+def count_alerts(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> int:
     total = 0
     for metric in metrics:
-        if metric.key in data and metric.key in thresholds:
-            if metric.higher_is_worse:
-                total += int((data[metric.key] > thresholds[metric.key]).sum())
-            else:
-                total += int((data[metric.key] < thresholds[metric.key]).sum())
+        if metric.key in data:
+            total += int(metric_alert_mask(data[metric.key], metric, thresholds, threshold_bounds).sum())
     return total
 
 
@@ -1655,7 +2004,7 @@ def render_trend(
                     )
                 )
         fig.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(fig, use_container_width=True)
+        render_plotly_chart(fig, f"趋势_{metric.label}")
 
 
 def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
@@ -1667,24 +2016,29 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
             values = group[metric.key].dropna()
             if values.empty:
                 continue
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "均值", "值": values.mean()})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "峰值", "值": values.max()})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "P90", "值": percentile(values, 0.90)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "P95", "值": percentile_95(values)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "P99", "值": percentile(values, 0.99)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "标准差", "值": values.std(ddof=0)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "IQR", "值": iqr(values)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "变异系数", "值": coefficient_of_variation(values)})
-            long_rows.append({"场景": scene, "指标": metric.label, "统计": "趋势斜率", "值": linear_slope_per_minute(group, metric.key)[0]})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "均值", "值": values.mean()})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "峰值", "值": values.max()})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "P90", "值": percentile(values, 0.90)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "P95", "值": percentile_95(values)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "P99", "值": percentile(values, 0.99)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "标准差", "值": values.std(ddof=0)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "IQR", "值": iqr(values)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "变异系数", "值": coefficient_of_variation(values)})
+            long_rows.append({"场景": scene, "指标key": metric.key, "指标": metric.label, "统计": "趋势斜率", "值": linear_slope_per_minute(group, metric.key)[0]})
 
     compare = pd.DataFrame(long_rows)
     if compare.empty:
         st.info("没有可用于对比的数值指标。")
         return
 
-    metric_label = st.selectbox(
+    metric_options = list(compare["指标key"].drop_duplicates())
+    metric_labels = compare.drop_duplicates("指标key").set_index("指标key")["指标"].to_dict()
+    sanitize_select_state("comparison_metric", metric_options)
+    metric_key = st.selectbox(
         "对比指标",
-        sorted(compare["指标"].unique()),
+        metric_options,
+        format_func=lambda key: metric_labels.get(key, key),
+        key="comparison_metric",
         help="选择要横向比较的指标。核心指标和 Excel 中识别出的语义化/动态指标都会出现在这里。",
     )
     stat = st.radio(
@@ -1695,10 +2049,11 @@ def render_comparison(data: pd.DataFrame, selected_scenes: list[str], metrics: l
         key="comparison_stat",
         help="均值看整体水平，P95/P99 看高水位和尾部风险，标准差/IQR/变异系数看波动，趋势斜率看是否随时间上升或下降。",
     )
-    chart_data = compare[(compare["指标"] == metric_label) & (compare["统计"] == stat)]
+    metric_label = metric_labels.get(metric_key, metric_key)
+    chart_data = compare[(compare["指标key"] == metric_key) & (compare["统计"] == stat)]
     fig = px.bar(chart_data, x="场景", y="值", color="场景", title=f"{metric_label}{stat}对比")
     fig.update_layout(height=360, showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, f"对比_{metric_label}_{stat}")
 
 
 def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
@@ -1714,6 +2069,7 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
 
     metric_options = [metric.key for metric in available]
     metric_labels = {metric.key: metric.label for metric in available}
+    sanitize_select_state("distribution_metric", metric_options)
     metric_key = st.selectbox(
         "分布指标",
         metric_options,
@@ -1732,7 +2088,7 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
         title=f"{metric.label}分布",
     )
     fig.update_layout(height=360, showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, f"分布_{metric.label}")
 
     numeric_cols = [metric.key for metric in available]
     corr = filtered[numeric_cols].corr(numeric_only=True)
@@ -1751,23 +2107,25 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
             )
         )
         heatmap.update_layout(title="指标相关性", height=420, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(heatmap, use_container_width=True)
+        render_plotly_chart(heatmap, "指标相关性")
 
     st.markdown("**控制图**")
     with st.expander("控制图口径", expanded=False):
         st.write("- 中心线为当前序列均值，UCL/LCL 为均值上下 3 倍标准差。")
         st.write("- 超出控制限表示统计波动异常，适合发现突发漂移、采集异常或工况突变。")
         st.write("- 控制图不是业务阈值；它回答的是“这段数据是否偏离自身历史波动范围”。")
+    sanitize_select_state("control_chart_metric", metric_options)
     control_metric_key = st.selectbox(
         "控制图指标",
         metric_options,
-        index=metric_options.index(metric.key) if metric.key in metric_options else 0,
+        index=safe_option_index(metric_options, metric.key),
         format_func=lambda key: metric_labels.get(key, key),
         key="control_chart_metric",
         help="选择要做统计过程控制的指标。建议选择连续采样、波动有业务意义的指标。",
     )
     control_metric = metric_by_key(available, control_metric_key)
     scene_options = list(filtered["display_scene"].drop_duplicates())
+    sanitize_select_state("control_chart_scene", scene_options)
     control_scene = st.selectbox(
         "控制图场景",
         scene_options,
@@ -1813,7 +2171,7 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
             height=420,
             margin=dict(l=20, r=20, t=50, b=20),
         )
-        st.plotly_chart(control_fig, use_container_width=True)
+        render_plotly_chart(control_fig, f"控制图_{control_scene}_{control_metric.label}")
 
 
 def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
@@ -1857,7 +2215,7 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
     chart_data["场景标识"] = chart_data["数据源"].astype(str) + " / " + chart_data["场景"].astype(str)
     fig = px.bar(chart_data, x="场景标识", y=metric_column, color="数据源", title=f"{metric_column} 对比")
     fig.update_layout(height=380, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, f"资源效率_{metric_column}")
 
     st.markdown("**吞吐-资源散点图**")
     scatter_y_options = [
@@ -1882,10 +2240,17 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
             title=f"平均吞吐 vs {scatter_y}",
         )
         scatter.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(scatter, use_container_width=True)
+        render_plotly_chart(scatter, f"吞吐资源散点_{scatter_y}")
 
 
-def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric], slope_threshold: float) -> None:
+def render_decision(
+    data: pd.DataFrame,
+    selected_scenes: list[str],
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    slope_threshold: float,
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> None:
     st.subheader("决策分析")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     if filtered.empty:
@@ -1897,7 +2262,7 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
         st.write("- 发布门禁用于把风险评级转换成通过/不通过，适合发版检查或测试准入。")
         st.write("- 容量估算是基于当前样本的单位资源成本做线性外推，正式配置结论仍需要目标机器实测。")
 
-    decisions = scene_decision_analysis(filtered, thresholds, metrics, slope_threshold)
+    decisions = scene_decision_analysis(filtered, thresholds, metrics, slope_threshold, threshold_bounds)
     st.markdown("**场景风险评级**")
     if decisions.empty:
         st.info("没有可用于风险评级的数据。")
@@ -1922,7 +2287,7 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
             )
         )
         risk_fig.update_layout(title="场景风险矩阵", height=360, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(risk_fig, use_container_width=True)
+        render_plotly_chart(risk_fig, "场景风险矩阵")
 
     radar_data = radar_profile_data(filtered, decisions, thresholds)
     if not radar_data.empty:
@@ -1954,7 +2319,7 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
             height=460,
             margin=dict(l=20, r=20, t=50, b=20),
         )
-        st.plotly_chart(radar_fig, use_container_width=True)
+        render_plotly_chart(radar_fig, "场景风险雷达图")
 
     st.markdown("**发布门禁**")
     col1, col2, col3, col4 = st.columns(4)
@@ -2055,39 +2420,178 @@ def render_decision(data: pd.DataFrame, selected_scenes: list[str], thresholds: 
             height=420,
             margin=dict(l=20, r=20, t=50, b=20),
         )
-        st.plotly_chart(curve, use_container_width=True)
+        render_plotly_chart(curve, "容量曲线")
 
 
-def render_alerts(data: pd.DataFrame, selected_scenes: list[str], thresholds: dict[str, float], metrics: list[Metric]) -> None:
+def render_alerts(
+    data: pd.DataFrame,
+    selected_scenes: list[str],
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> None:
     st.subheader("异常点")
     with st.expander("口径说明", expanded=False):
-        st.write("- 异常点由侧边栏阈值和告警方向决定。")
-        st.write("- 对“越高越差”的指标，值大于阈值算异常；对“越低越差”的指标，值小于阈值算异常。")
+        st.write("- 未配置上下限时，异常点由侧边栏阈值和告警方向决定。")
+        st.write("- 配置了 lower_threshold / upper_threshold 时，值低于下限或高于上限都算异常。")
     filtered = data[data["scene"].isin(selected_scenes)].copy()
     alert_frames = []
     for metric in metrics:
-        if metric.key not in thresholds:
+        if metric.key not in filtered:
             continue
-        mask = filtered[metric.key] > thresholds[metric.key] if metric.higher_is_worse else filtered[metric.key] < thresholds[metric.key]
+        mask = metric_alert_mask(filtered[metric.key], metric, thresholds, threshold_bounds)
         alert = filtered[mask][["timestamp", "source", "scene", metric.key]].copy()
         if alert.empty:
             continue
         alert["指标"] = metric.label
-        alert["阈值"] = thresholds[metric.key]
+        alert["正常区间/阈值"] = metric_alert_rule_text(metric, thresholds, threshold_bounds)
         alert["值"] = alert[metric.key]
-        alert["告警方向"] = "高于阈值" if metric.higher_is_worse else "低于阈值"
-        alert["偏离阈值比例(%)"] = np.where(
-            alert["阈值"] == 0,
-            np.nan,
-            (alert["值"] - alert["阈值"]).abs() / alert["阈值"].abs() * 100,
-        )
-        alert_frames.append(alert[["timestamp", "source", "scene", "指标", "值", "阈值", "告警方向", "偏离阈值比例(%)"]])
+        lower, upper = metric_alert_bounds(threshold_bounds, metric)
+        if lower is not None or upper is not None:
+            alert["告警类型"] = "区间异常"
+            if lower is not None:
+                alert.loc[alert["值"] < lower, "告警类型"] = "低于下限"
+            if upper is not None:
+                alert.loc[alert["值"] > upper, "告警类型"] = "高于上限"
+        else:
+            alert["告警类型"] = "高于阈值" if metric.higher_is_worse else "低于阈值"
+        alert["偏离阈值比例(%)"] = metric_alert_deviation_percent(alert["值"], metric, thresholds, threshold_bounds)
+        alert_frames.append(alert[["timestamp", "source", "scene", "指标", "值", "正常区间/阈值", "告警类型", "偏离阈值比例(%)"]])
 
     if not alert_frames:
         st.success("当前阈值下没有异常点。")
         return
 
     alerts = pd.concat(alert_frames, ignore_index=True).sort_values("timestamp")
+    segments = alert_segments(filtered, thresholds, metrics, threshold_bounds)
+    if not segments.empty:
+        st.markdown("**异常段摘要**")
+        with st.expander("异常段口径", expanded=False):
+            st.write("- 异常段把同一数据源、场景、指标下连续发生的异常点合并为一段。")
+            st.write("- 相邻异常点之间的间隔不超过典型采样间隔的 1.5 倍时，会归为同一段。")
+            st.write("- 持续时长会补上一个典型采样间隔，因此单点异常也会有约一个采样周期的持续时长。")
+        display_segments = segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")
+        st.dataframe(display_segments, use_container_width=True, hide_index=True)
+        st.download_button(
+            "下载异常段 CSV",
+            segments.to_csv(index=False).encode("utf-8-sig"),
+            file_name="resource_alert_segments.csv",
+            mime="text/csv",
+        )
+        segment_chart = segments.head(20).copy()
+        segment_chart["异常段标识"] = (
+            segment_chart["数据源"].astype(str)
+            + " / "
+            + segment_chart["场景"].astype(str)
+            + " / "
+            + segment_chart["指标"].astype(str)
+            + " #"
+            + segment_chart["异常段"].astype(str)
+        )
+        fig_segments = px.bar(
+            segment_chart.sort_values("持续时长(分钟)", ascending=True),
+            x="持续时长(分钟)",
+            y="异常段标识",
+            color="告警类型",
+            orientation="h",
+            hover_data=["开始时间", "结束时间", "异常点数", "最小值", "最大值", "正常区间/阈值"],
+            title="异常段持续时长 Top 20",
+        )
+        fig_segments.update_layout(height=max(360, 26 * len(segment_chart) + 120), margin=dict(l=20, r=20, t=50, b=20))
+        render_plotly_chart(fig_segments, "异常段持续时长Top20")
+
+        st.markdown("**异常段多指标联动图**")
+        linked_segments = segments.copy()
+        linked_segments["异常段标识"] = (
+            linked_segments["数据源"].astype(str)
+            + " / "
+            + linked_segments["场景"].astype(str)
+            + " / "
+            + linked_segments["指标"].astype(str)
+            + " #"
+            + linked_segments["异常段"].astype(str)
+            + " "
+            + linked_segments["开始时间"].astype(str)
+        )
+        segment_options = list(linked_segments["异常段标识"])
+        sanitize_select_state("alert_segment_detail", segment_options)
+        selected_segment_id = st.selectbox(
+            "查看异常段",
+            segment_options,
+            key="alert_segment_detail",
+            help="选择一个异常段后，会展示该时间窗口内多个指标的同步变化。",
+        )
+        selected_segment = linked_segments[linked_segments["异常段标识"] == selected_segment_id].iloc[0]
+        col1, col2, col3 = st.columns(3)
+        before_minutes = col1.number_input("前置窗口(分钟)", min_value=0.0, value=5.0, step=1.0, help="从异常开始时间向前扩展的观察窗口。")
+        after_minutes = col2.number_input("后置窗口(分钟)", min_value=0.0, value=5.0, step=1.0, help="从异常结束时间向后扩展的观察窗口。")
+        normalize_linked = col3.checkbox("标准化显示", value=True, help="把每个指标缩放到 0-1，便于不同单位的指标放在同一张图里比较形态。")
+
+        scene_window = filtered[
+            (filtered["source"] == selected_segment["数据源"])
+            & (filtered["scene"] == selected_segment["场景"])
+            & (filtered["timestamp"] >= selected_segment["开始时间"] - pd.Timedelta(minutes=float(before_minutes)))
+            & (filtered["timestamp"] <= selected_segment["结束时间"] + pd.Timedelta(minutes=float(after_minutes)))
+        ].sort_values("timestamp")
+        available_metric_keys = [metric.key for metric in metrics if metric.key in scene_window and scene_window[metric.key].notna().any()]
+        metric_labels = {metric.key: metric.label for metric in metrics}
+        default_linked_metrics = [selected_segment["指标key"]]
+        for candidate in available_metric_keys:
+            if candidate not in default_linked_metrics:
+                default_linked_metrics.append(candidate)
+            if len(default_linked_metrics) >= 4:
+                break
+        sanitize_multiselect_state("alert_linked_metrics", available_metric_keys)
+        linked_metric_keys = st.multiselect(
+            "联动指标",
+            available_metric_keys,
+            default=[key for key in default_linked_metrics if key in available_metric_keys],
+            format_func=lambda key: metric_labels.get(key, key),
+            key="alert_linked_metrics",
+            help="选择要在异常段前后同窗查看的指标。建议 2-5 个，过多会降低可读性。",
+        )
+        if scene_window.empty or not linked_metric_keys:
+            st.info("当前异常段窗口内没有可展示的联动指标。")
+        else:
+            linked_fig = go.Figure()
+            for metric_key in linked_metric_keys:
+                metric = metric_by_key(metrics, metric_key)
+                values = scene_window[["timestamp", metric_key]].dropna()
+                if values.empty:
+                    continue
+                y = values[metric_key].astype(float)
+                y_label = metric.label
+                if normalize_linked:
+                    min_value = y.min()
+                    max_value = y.max()
+                    y = (y - min_value) / (max_value - min_value) if max_value != min_value else y * 0
+                    y_label = f"{metric.label}(0-1)"
+                linked_fig.add_trace(
+                    go.Scatter(
+                        x=values["timestamp"],
+                        y=y,
+                        mode="lines+markers",
+                        name=y_label,
+                    )
+                )
+            linked_fig.add_vrect(
+                x0=selected_segment["开始时间"],
+                x1=selected_segment["结束时间"],
+                fillcolor="#d62728",
+                opacity=0.12,
+                line_width=0,
+                annotation_text="异常段",
+                annotation_position="top left",
+            )
+            linked_fig.update_layout(
+                title=f"{selected_segment['数据源']} / {selected_segment['场景']} 异常段联动",
+                xaxis_title="时间",
+                yaxis_title="标准化值" if normalize_linked else "原始值",
+                height=430,
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+            render_plotly_chart(linked_fig, f"异常段联动_{selected_segment['数据源']}_{selected_segment['场景']}_{selected_segment['指标']}")
+
     timeline = with_display_label(alerts.rename(columns={"timestamp": "timestamp"}))
     timeline["偏离阈值比例(%)"] = timeline["偏离阈值比例(%)"].fillna(0)
     with st.expander("异常时间轴口径", expanded=False):
@@ -2099,13 +2603,13 @@ def render_alerts(data: pd.DataFrame, selected_scenes: list[str], thresholds: di
         y="display_scene",
         color="指标",
         size="偏离阈值比例(%)",
-        hover_data=["source", "scene", "值", "阈值", "告警方向", "偏离阈值比例(%)"],
+        hover_data=["source", "scene", "值", "正常区间/阈值", "告警类型", "偏离阈值比例(%)"],
         labels={"timestamp": "时间", "display_scene": "场景", "偏离阈值比例(%)": "偏离阈值比例(%)"},
         title="异常时间轴",
     )
     fig.update_traces(marker=dict(sizemin=6))
     fig.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, "异常时间轴")
 
     st.dataframe(alerts, use_container_width=True, hide_index=True)
     st.download_button(
@@ -2169,11 +2673,14 @@ def render_sampling_interval(data: pd.DataFrame, selected_scenes: list[str]) -> 
         title="采样间隔分布",
     )
     box.update_layout(height=360, showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(box, use_container_width=True)
+    render_plotly_chart(box, "采样间隔分布")
 
+    line_scene_options = list(interval_data["display_scene"].drop_duplicates())
+    sanitize_select_state("sampling_interval_scene", line_scene_options)
     line_scene = st.selectbox(
         "采样间隔时间线场景",
-        list(interval_data["display_scene"].drop_duplicates()),
+        line_scene_options,
+        key="sampling_interval_scene",
         help="选择一个场景查看采样间隔随时间的变化，尖峰通常表示采集延迟或缺口。",
     )
     line_data = interval_data[interval_data["display_scene"] == line_scene]
@@ -2185,7 +2692,7 @@ def render_sampling_interval(data: pd.DataFrame, selected_scenes: list[str]) -> 
         title=f"{line_scene} 采样间隔时间线",
     )
     line.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(line, use_container_width=True)
+    render_plotly_chart(line, f"采样间隔时间线_{line_scene}")
 
 
 def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
@@ -2202,9 +2709,12 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
         return
 
     stats = with_display_label(stats) if "source" in stats.columns else stats.assign(display_scene=stats["scene"])
+    baseline_options = list(stats["display_scene"])
+    sanitize_select_state("baseline_growth_baseline", baseline_options)
     baseline = st.selectbox(
         "基准场景",
-        list(stats["display_scene"]),
+        baseline_options,
+        key="baseline_growth_baseline",
         help="选择一个场景作为对照组，其他场景会计算相对它的增长率。",
     )
     stat_labels = {
@@ -2248,16 +2758,22 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
     result = pd.DataFrame(rows)
     st.dataframe(result, use_container_width=True, hide_index=True)
 
-    metric_label = st.selectbox(
+    metric_options = [metric.key for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
+    metric_labels = {metric.key: metric.label for metric in metrics}
+    sanitize_select_state("baseline_growth_metric", metric_options)
+    metric_key = st.selectbox(
         "增长率图表指标",
-        [metric.label for metric in metrics],
+        metric_options,
+        format_func=lambda key: metric_labels.get(key, key),
+        key="baseline_growth_metric",
         help="选择要绘制增长率柱状图的指标。",
     )
+    metric_label = metric_labels.get(metric_key, metric_key)
     chart_data = result[result["指标"] == metric_label]
     fig = px.bar(chart_data, x="场景", y="相对增长率(%)", color="场景", title=f"{metric_label}相对 {baseline} 的增长率")
     fig.add_hline(y=0, line_color="#666", line_width=1)
     fig.update_layout(height=360, showlegend=False, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, f"基准增长_{metric_label}")
 
 
 def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_threshold: float, metrics: list[Metric]) -> None:
@@ -2280,7 +2796,7 @@ def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_
         fig = px.bar(chart_data, x="场景标识", y="内存斜率(MB/分钟)", color="判断", title="内存线性增长斜率")
         fig.add_hline(y=slope_threshold, line_dash="dash", line_color="#d62728", annotation_text="疑似泄漏阈值")
         fig.update_layout(height=360, margin=dict(l=20, r=20, t=50, b=20))
-        st.plotly_chart(fig, use_container_width=True)
+        render_plotly_chart(fig, "内存线性增长斜率")
 
     st.markdown("**全指标趋势斜率**")
     trends = trend_analysis(filtered, metrics)
@@ -2297,12 +2813,20 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         st.info("上传两个或更多 Excel 文件后，可在这里按数据源对比不同版本。")
         return
     stats = metric_stats(filtered, ["source", "scene"], metrics)
-    metric = st.selectbox(
+    metric_options = [metric.key for metric in metrics if any(column.startswith(f"{metric.key}_") for column in stats.columns)]
+    metric_labels = {metric.key: metric.label for metric in metrics}
+    if not metric_options:
+        st.info("当前数据没有可用于版本对比的指标。")
+        return
+    sanitize_select_state("version_compare_metric", metric_options)
+    metric_key = st.selectbox(
         "版本对比指标",
-        metrics,
-        format_func=lambda item: item.label,
+        metric_options,
+        format_func=lambda key: metric_labels.get(key, key),
+        key="version_compare_metric",
         help="选择要在不同 Excel 文件之间对比的指标。上传文件名会作为版本/批次标识。",
     )
+    metric = metric_by_key(metrics, metric_key)
     stat_labels = {
         "mean": "均值",
         "max": "峰值",
@@ -2328,9 +2852,11 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         st.info("当前指标没有可对比数据。")
         return
     sources = list(stats["source"].dropna().unique())
+    sanitize_select_state("version_compare_baseline_source", sources)
     baseline_source = st.selectbox(
         "基准数据源",
         sources,
+        key="version_compare_baseline_source",
         help="选择作为基准版本或基准批次的数据源。其他数据源会和它逐场景比较。",
     )
     regression_threshold = st.number_input(
@@ -2386,12 +2912,12 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
             height=max(360, 40 * len(heatmap_pivot.index) + 140),
             margin=dict(l=20, r=20, t=50, b=20),
         )
-        st.plotly_chart(heatmap, use_container_width=True)
+        render_plotly_chart(heatmap, "版本退化热力图")
 
     long_data = stats[["source", "scene", column]].rename(columns={column: "值"})
     fig = px.bar(long_data, x="scene", y="值", color="source", barmode="group", title=f"不同数据源 {metric.label}{stat_labels[stat_name]} 对比")
     fig.update_layout(height=380, margin=dict(l=20, r=20, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
+    render_plotly_chart(fig, f"版本对比_{metric.label}_{stat_labels[stat_name]}")
 
 
 def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: float) -> tuple[pd.DataFrame, list[str]]:
@@ -2484,15 +3010,16 @@ def render_report(
     thresholds: dict[str, float],
     slope_threshold: float,
     metrics: list[Metric],
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     config_table: pd.DataFrame | None = None,
     config_notes: list[str] | None = None,
 ) -> None:
     st.subheader("测试结论与报告导出")
-    conclusions = build_conclusions(data, thresholds, slope_threshold, metrics)
+    conclusions = build_conclusions(data, thresholds, slope_threshold, metrics, threshold_bounds)
     for item in conclusions:
         st.write(f"- {item}")
 
-    markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, config_table, config_notes)
+    markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
     html_report = build_report_html(markdown_report)
     st.download_button(
         "下载 Markdown 报告",
@@ -2509,13 +3036,19 @@ def render_report(
     st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
 
 
-def render_generic_report(data: pd.DataFrame, thresholds: dict[str, float], metrics: list[Metric], group_label: str) -> None:
+def render_generic_report(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    group_label: str,
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+) -> None:
     st.subheader("分析报告导出")
-    conclusions = build_generic_conclusions(data, thresholds, metrics)
+    conclusions = build_generic_conclusions(data, thresholds, metrics, threshold_bounds)
     for item in conclusions:
         st.write(f"- {item}")
 
-    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label)
+    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds)
     html_report = build_report_html(markdown_report)
     st.download_button(
         "下载 Markdown 报告",
@@ -2631,6 +3164,7 @@ def main() -> None:
     scenes = list(data["scene"].dropna().unique())
     # 指标发现发生在数据加载之后：性能模式核心指标优先；通用模式中所有数值列都是动态指标。
     metrics = discover_metrics(data)
+    render_config_validation(imported_config, metrics)
     with st.sidebar:
         st.header("阈值")
         st.caption("核心指标使用内置默认阈值；动态扩展指标默认使用当前数据 P95。可导入 JSON 配置覆盖阈值和方向。")
@@ -2694,23 +3228,30 @@ def main() -> None:
         )
 
         st.header("筛选")
+        sanitize_multiselect_state("selected_sources", sources)
         selected_sources = st.multiselect(
             "数据源",
             sources,
             default=sources,
+            key="selected_sources",
             help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
         )
+        sanitize_multiselect_state("selected_scenes", scenes)
         selected_scenes = st.multiselect(
             group_label,
             scenes,
             default=scenes,
+            key="selected_scenes",
             help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
         )
         available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
+        available_metric_keys = [metric.key for metric in available_metrics]
+        sanitize_multiselect_state("selected_trend_metrics", available_metric_keys)
         selected_metrics = st.multiselect(
             "趋势指标",
-            [metric.key for metric in available_metrics],
-            default=[metric.key for metric in available_metrics[:3]],
+            available_metric_keys,
+            default=available_metric_keys[:3],
+            key="selected_trend_metrics",
             format_func=lambda key: metric_by_key(metrics, key).label,
             help="选择趋势页要绘制的指标。这里不影响概览、报告和其他统计表。",
         )
@@ -2726,7 +3267,7 @@ def main() -> None:
     if analysis_mode == GENERIC_MODE:
         tabs = st.tabs(["概览", "趋势", "对比", "基准增长", "版本对比", "分布", "异常", "报告", "元信息", "原始数据"])
         with tabs[0]:
-            render_overview(filtered_data, thresholds, metrics)
+            render_overview(filtered_data, thresholds, metrics, threshold_bounds)
         with tabs[1]:
             render_trend(filtered_data, selected_scenes, selected_metrics, thresholds, threshold_bounds, metrics)
         with tabs[2]:
@@ -2738,9 +3279,9 @@ def main() -> None:
         with tabs[5]:
             render_distribution(filtered_data, selected_scenes, metrics)
         with tabs[6]:
-            render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+            render_alerts(filtered_data, selected_scenes, thresholds, metrics, threshold_bounds)
         with tabs[7]:
-            render_generic_report(filtered_data, thresholds, metrics, group_label)
+            render_generic_report(filtered_data, thresholds, metrics, group_label, threshold_bounds)
         with tabs[8]:
             selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
             render_system_info(selected_system)
@@ -2757,7 +3298,7 @@ def main() -> None:
     else:
         tabs = st.tabs(["概览", "趋势", "对比", "配置建议", "基准增长", "泄漏检测", "版本对比", "效率", "决策", "分布", "异常", "报告", "系统信息", "原始数据"])
         with tabs[0]:
-            render_overview(filtered_data, thresholds, metrics)
+            render_overview(filtered_data, thresholds, metrics, threshold_bounds)
         with tabs[1]:
             render_trend(filtered_data, selected_scenes, selected_metrics, thresholds, threshold_bounds, metrics)
         with tabs[2]:
@@ -2773,11 +3314,11 @@ def main() -> None:
         with tabs[7]:
             render_efficiency(filtered_data, selected_scenes)
         with tabs[8]:
-            render_decision(filtered_data, selected_scenes, thresholds, metrics, slope_threshold)
+            render_decision(filtered_data, selected_scenes, thresholds, metrics, slope_threshold, threshold_bounds)
         with tabs[9]:
             render_distribution(filtered_data, selected_scenes, metrics)
         with tabs[10]:
-            render_alerts(filtered_data, selected_scenes, thresholds, metrics)
+            render_alerts(filtered_data, selected_scenes, thresholds, metrics, threshold_bounds)
         with tabs[11]:
             if config_table.empty:
                 config_table, config_notes = configuration_recommendation(
@@ -2791,7 +3332,7 @@ def main() -> None:
                     recommendation_factor=1.5,
                     slope_threshold=slope_threshold,
                 )
-            render_report(filtered_data, thresholds, slope_threshold, metrics, config_table, config_notes)
+            render_report(filtered_data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
         with tabs[12]:
             selected_system = system_info[system_info["数据源"].isin(selected_sources)] if "数据源" in system_info else system_info
             render_system_info(selected_system)

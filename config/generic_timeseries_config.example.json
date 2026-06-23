@@ -1,9 +1,12 @@
 {
   "version": 1,
+  "description": "通用时序分析配置示例。第一个 sheet 作为元信息，其余 sheet 作为设备/工况/批次分组；所有数值列会自动作为指标。",
   "mode": "generic_timeseries",
   "fields": {
     "timestamp": [
       "采样时间",
+      "时间",
+      "timestamp",
       "recorded_at",
       "time"
     ]
@@ -11,7 +14,8 @@
   "analysis": {
     "mode": "generic_timeseries",
     "group_label": "设备",
-    "warmup_minutes": 0
+    "warmup_minutes": 0,
+    "description": "group_label 控制页面分组名称；warmup_minutes 会排除每个分组开头 N 分钟数据。"
   },
   "metrics": {
     "温度": {
@@ -20,7 +24,8 @@
       "threshold": 80,
       "lower_threshold": 18,
       "upper_threshold": 75,
-      "direction": "higher"
+      "direction": "higher",
+      "description": "threshold 用于单阈值兼容；配置 lower/upper 后会优先按正常区间判断异常。"
     },
     "湿度": {
       "label": "湿度",
@@ -28,7 +33,8 @@
       "threshold": 20,
       "lower_threshold": 20,
       "upper_threshold": 75,
-      "direction": "lower"
+      "direction": "lower",
+      "description": "湿度低于 20% 或高于 75% 都视为异常。"
     },
     "压力": {
       "label": "压力",
@@ -45,6 +51,32 @@
       "lower_threshold": 10.5,
       "upper_threshold": 13.5,
       "direction": "lower"
+    },
+    "流量": {
+      "label": "流量",
+      "unit": "L/min",
+      "threshold": 5,
+      "lower_threshold": 5,
+      "upper_threshold": 30,
+      "direction": "lower",
+      "description": "流量不足或异常偏高都可能表示工况异常。"
+    },
+    "振动": {
+      "label": "振动",
+      "unit": "mm/s",
+      "threshold": 3.5,
+      "upper_threshold": 3.5,
+      "direction": "higher",
+      "description": "只配置上限时，超过上限算异常；没有下限约束。"
+    },
+    "报警次数": {
+      "label": "报警次数",
+      "unit": "次",
+      "threshold": 1,
+      "lower_threshold": 0,
+      "upper_threshold": 0,
+      "direction": "higher",
+      "description": "报警次数正常区间固定为 0，任何大于 0 的采样都算异常。"
     }
   }
 }
