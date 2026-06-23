@@ -1,50 +1,87 @@
 {
   "version": 1,
+  "description": "应用性能分析配置示例。fields 用于适配不同采集工具表头；metrics 用于配置展示名、单位、阈值、告警方向和可选上下限。",
+  "mode": "performance",
   "fields": {
+    "timestamp": [
+      "采样时间",
+      "时间戳",
+      "timestamp"
+    ],
     "cpu_percent": [
       "CPU使用率",
-      "Process CPU"
+      "Process CPU",
+      "CPU%"
     ],
     "memory_mb": [
       "RSS(MB)",
-      "Working Set"
+      "Working Set",
+      "内存占用"
+    ],
+    "memory_percent": [
+      "内存占用百分比",
+      "Memory%",
+      "mem%"
     ],
     "response_time_ms": [
       "P95响应时间",
       "latency_ms"
     ],
+    "qps": [
+      "请求吞吐",
+      "每秒请求数"
+    ],
     "network_down_kbps": [
       "下行流量",
       "rx_kbps"
+    ],
+    "failed_requests": [
+      "失败请求",
+      "request_fail"
     ]
   },
   "analysis": {
+    "mode": "performance",
+    "group_label": "场景",
     "memory_leak_slope_threshold": 2.0,
-    "warmup_minutes": 1.0
+    "warmup_minutes": 1.0,
+    "description": "memory_leak_slope_threshold 单位为 MB/分钟；warmup_minutes 会排除每个场景开头 N 分钟数据。"
   },
   "metrics": {
     "cpu_percent": {
       "label": "CPU",
+      "unit": "%",
       "threshold": 80,
-      "direction": "higher"
+      "lower_threshold": 0,
+      "upper_threshold": 80,
+      "direction": "higher",
+      "description": "CPU 超过 80% 算异常；同时用于趋势图显示正常区间。"
     },
     "memory_mb": {
       "label": "内存占用",
+      "unit": "MB",
       "threshold": 2048,
+      "lower_threshold": 0,
+      "upper_threshold": 2048,
       "direction": "higher"
     },
     "memory_percent": {
       "label": "内存占比",
+      "unit": "%",
       "threshold": 70,
+      "lower_threshold": 0,
+      "upper_threshold": 70,
       "direction": "higher"
     },
     "threads": {
       "label": "线程",
+      "unit": "个",
       "threshold": 120,
       "direction": "higher"
     },
     "handles": {
       "label": "句柄",
+      "unit": "个",
       "threshold": 1500,
       "direction": "higher"
     },
@@ -55,37 +92,79 @@
     },
     "qps": {
       "label": "QPS",
+      "unit": "",
       "threshold": 10,
-      "direction": "lower"
+      "direction": "lower",
+      "description": "QPS 低于 10 算异常，适合吞吐必须达标的场景。"
+    },
+    "concurrency": {
+      "label": "并发数",
+      "unit": "个",
+      "threshold": 100,
+      "direction": "higher"
     },
     "response_time_ms": {
       "label": "响应时间",
+      "unit": "ms",
       "threshold": 1000,
+      "upper_threshold": 1000,
       "direction": "higher"
     },
     "error_count": {
       "label": "错误数",
+      "unit": "个",
       "threshold": 1,
+      "lower_threshold": 0,
+      "upper_threshold": 0,
       "direction": "higher"
     },
     "fps": {
       "label": "FPS",
+      "unit": "",
       "threshold": 45,
-      "direction": "lower"
+      "lower_threshold": 45,
+      "upper_threshold": 120,
+      "direction": "lower",
+      "description": "FPS 低于 45 算异常；上限用于正常区间展示和异常判断。"
     },
     "gc_time_ms": {
       "label": "GC耗时",
+      "unit": "ms",
       "threshold": 100,
+      "upper_threshold": 100,
       "direction": "higher"
     },
     "failed_requests": {
       "label": "失败请求数",
+      "unit": "个",
       "threshold": 1,
+      "lower_threshold": 0,
+      "upper_threshold": 0,
       "direction": "higher"
     },
     "io_wait_ms": {
       "label": "IO等待",
+      "unit": "ms",
       "threshold": 50,
+      "upper_threshold": 50,
+      "direction": "higher"
+    },
+    "network_down_kbps": {
+      "label": "网络下行",
+      "unit": "KB/s",
+      "threshold": 4096,
+      "direction": "higher"
+    },
+    "disk_read_mbps": {
+      "label": "磁盘读",
+      "unit": "MB/s",
+      "threshold": 100,
+      "direction": "higher"
+    },
+    "iops": {
+      "label": "IOPS",
+      "unit": "",
+      "threshold": 1000,
       "direction": "higher"
     }
   }
