@@ -19,6 +19,25 @@ GENERIC_SAMPLE_FILE = Path("data/generic_timeseries_samples/generic_sensor_measu
 PERFORMANCE_MODE = "应用性能"
 GENERIC_MODE = "通用时序"
 ANALYSIS_MODES = (PERFORMANCE_MODE, GENERIC_MODE)
+PLOTLY_COLORWAY = [
+    "#2563eb",
+    "#dc2626",
+    "#16a34a",
+    "#f59e0b",
+    "#7c3aed",
+    "#0891b2",
+    "#db2777",
+    "#65a30d",
+    "#ea580c",
+    "#4f46e5",
+]
+PLOTLY_AXIS_STYLE = {
+    "showgrid": True,
+    "gridcolor": "#e5e7eb",
+    "zerolinecolor": "#d1d5db",
+    "linecolor": "#d1d5db",
+    "tickcolor": "#9ca3af",
+}
 
 TIME_KEYS = ("时间", "timestamp", "time", "date")
 CPU_KEYS = ("cpu", "CPU")
@@ -1970,11 +1989,77 @@ def config_to_json_bytes(config: dict) -> bytes:
     return json.dumps(config, ensure_ascii=False, indent=2).encode("utf-8-sig")
 
 
+def is_auto_plotly_color(value: object) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    color = value.strip().lower()
+    if not color:
+        return True
+    return bool(re.fullmatch(r"#00000[1-9a-f]", color))
+
+
+def hex_to_rgba(hex_color: str, alpha: float) -> str:
+    color = hex_color.lstrip("#")
+    if len(color) != 6:
+        return f"rgba(37, 99, 235, {alpha})"
+    red = int(color[0:2], 16)
+    green = int(color[2:4], 16)
+    blue = int(color[4:6], 16)
+    return f"rgba({red}, {green}, {blue}, {alpha})"
+
+
+def apply_chart_export_theme(fig: go.Figure) -> go.Figure:
+    fig.update_layout(
+        template="plotly_white",
+        colorway=PLOTLY_COLORWAY,
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font={"color": "#111827"},
+        legend={
+            "bgcolor": "rgba(255,255,255,0.82)",
+            "bordercolor": "#e5e7eb",
+            "borderwidth": 1,
+        },
+    )
+    fig.update_xaxes(**PLOTLY_AXIS_STYLE)
+    fig.update_yaxes(**PLOTLY_AXIS_STYLE)
+    fig.update_polars(
+        bgcolor="#ffffff",
+        angularaxis={"gridcolor": "#e5e7eb", "linecolor": "#d1d5db"},
+        radialaxis={"gridcolor": "#e5e7eb", "linecolor": "#d1d5db"},
+    )
+
+    for index, trace in enumerate(fig.data):
+        color = PLOTLY_COLORWAY[index % len(PLOTLY_COLORWAY)]
+        trace_type = getattr(trace, "type", "")
+        if trace_type in {"scatter", "scattergl", "scatterpolar"}:
+            line = getattr(trace, "line", None)
+            marker = getattr(trace, "marker", None)
+            if line is not None and is_auto_plotly_color(getattr(line, "color", None)):
+                line.color = color
+            if marker is not None and is_auto_plotly_color(getattr(marker, "color", None)):
+                marker.color = color
+            if getattr(trace, "fill", None) and is_auto_plotly_color(getattr(trace, "fillcolor", None)):
+                trace.fillcolor = hex_to_rgba(color, 0.16)
+        elif trace_type in {"bar", "box", "violin"}:
+            marker = getattr(trace, "marker", None)
+            if marker is not None and is_auto_plotly_color(getattr(marker, "color", None)):
+                marker.color = color
+    return fig
+
+
 def render_plotly_chart(fig: go.Figure, filename: str, *, height: int | None = None) -> None:
     if height is not None:
         fig.update_layout(height=height)
-    st.plotly_chart(fig, use_container_width=True)
-    html = fig.to_html(full_html=True, include_plotlyjs=True)
+    apply_chart_export_theme(fig)
+    st.plotly_chart(fig, use_container_width=True, theme=None)
+    html = fig.to_html(
+        full_html=True,
+        include_plotlyjs=True,
+        config={"responsive": True, "displaylogo": False},
+    )
     st.download_button(
         "下载图表 HTML",
         html.encode("utf-8-sig"),
