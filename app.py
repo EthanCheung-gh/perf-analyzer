@@ -655,7 +655,7 @@ def sanitize_select_state(key: str, options: list[str]) -> None:
         del st.session_state[key]
 
 
-def sanitize_multiselect_state(key: str, options: list[str]) -> None:
+def sanitize_multiselect_state(key: str, options: list[str], default: list[str] | None = None) -> None:
     if key not in st.session_state:
         return
     selected = st.session_state[key]
@@ -663,8 +663,47 @@ def sanitize_multiselect_state(key: str, options: list[str]) -> None:
         del st.session_state[key]
         return
     valid = [item for item in selected if item in options]
+    fallback = [item for item in (default or []) if item in options]
+    if not valid and fallback:
+        st.session_state[key] = fallback
+        return
     if valid != selected:
         st.session_state[key] = valid
+
+
+def reset_state_keys(keys: list[str]) -> None:
+    for key in keys:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def sync_filter_context(
+    analysis_mode: str,
+    sources: list[str],
+    scenes: list[str],
+    metric_keys: list[str],
+) -> None:
+    signature = (analysis_mode, tuple(sources), tuple(scenes), tuple(metric_keys))
+    if st.session_state.get("filter_context_signature") == signature:
+        return
+    reset_state_keys(
+        [
+            "selected_sources",
+            "selected_scenes",
+            "selected_trend_metrics",
+            "distribution_metric",
+            "control_chart_metric",
+            "control_chart_scene",
+            "efficiency_metric",
+            "efficiency_scatter_y",
+            "sampling_interval_scene",
+            "version_compare_metric",
+            "version_compare_baseline_source",
+            "baseline_growth_baseline",
+            "baseline_growth_metric",
+        ]
+    )
+    st.session_state["filter_context_signature"] = signature
 
 
 def summarize(
@@ -3521,37 +3560,41 @@ def main() -> None:
         metrics = configured_metrics
 
         st.header("筛选")
-        sanitize_multiselect_state("selected_sources", sources)
         default_sources = [source for source in config_ui_list(imported_config, "filters", "selected_sources", sources) if source in sources] or sources
-        selected_sources = st.multiselect(
-            "数据源",
-            sources,
-            default=default_sources,
-            key="selected_sources",
-            help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
-        )
-        sanitize_multiselect_state("selected_scenes", scenes)
         default_scenes = [scene for scene in config_ui_list(imported_config, "filters", "selected_groups", scenes) if scene in scenes] or scenes
-        selected_scenes = st.multiselect(
-            group_label,
-            scenes,
-            default=default_scenes,
-            key="selected_scenes",
-            help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
-        )
         available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
         available_metric_keys = [metric.key for metric in available_metrics]
-        sanitize_multiselect_state("selected_trend_metrics", available_metric_keys)
         default_trend_metrics = [
             metric for metric in config_ui_list(imported_config, "filters", "selected_trend_metrics", available_metric_keys[:3]) if metric in available_metric_keys
         ] or available_metric_keys[:3]
+        sync_filter_context(analysis_mode, sources, scenes, available_metric_keys)
+        sanitize_multiselect_state("selected_sources", sources, default_sources)
+        selected_sources_kwargs = {"default": default_sources} if "selected_sources" not in st.session_state else {}
+        selected_sources = st.multiselect(
+            "数据源",
+            sources,
+            key="selected_sources",
+            help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
+            **selected_sources_kwargs,
+        )
+        sanitize_multiselect_state("selected_scenes", scenes, default_scenes)
+        selected_scenes_kwargs = {"default": default_scenes} if "selected_scenes" not in st.session_state else {}
+        selected_scenes = st.multiselect(
+            group_label,
+            scenes,
+            key="selected_scenes",
+            help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
+            **selected_scenes_kwargs,
+        )
+        sanitize_multiselect_state("selected_trend_metrics", available_metric_keys, default_trend_metrics)
+        selected_metrics_kwargs = {"default": default_trend_metrics} if "selected_trend_metrics" not in st.session_state else {}
         selected_metrics = st.multiselect(
             "趋势指标",
             available_metric_keys,
-            default=default_trend_metrics,
             key="selected_trend_metrics",
             format_func=lambda key: metric_by_key(metrics, key).label,
             help="选择趋势页要绘制的指标。这里不影响概览、报告和其他统计表。",
+            **selected_metrics_kwargs,
         )
 
         current_config = build_settings_config(
