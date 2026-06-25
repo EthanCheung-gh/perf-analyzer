@@ -123,8 +123,24 @@ SEMANTIC_METRICS = [
 ]
 STANDARD_METRICS = [*CORE_METRICS, *SEMANTIC_METRICS]
 META_COLUMNS = {"timestamp", "source", "scene", "display_scene"}
-CONFIG_TOP_LEVEL_KEYS = {"version", "mode", "fields", "analysis", "metrics", "notes", "description", "_comment"}
+CONFIG_TOP_LEVEL_KEYS = {"version", "mode", "fields", "analysis", "metrics", "ui", "notes", "description", "_comment"}
 CONFIG_ANALYSIS_KEYS = {"mode", "group_label", "memory_leak_slope_threshold", "warmup_minutes", "notes", "description", "_comment"}
+CONFIG_UI_SECTIONS = {
+    "trend",
+    "alerts",
+    "version_compare",
+    "decision",
+    "capacity",
+    "configuration_recommendation",
+    "baseline_growth",
+    "distribution",
+    "efficiency",
+    "sampling_interval",
+    "filters",
+    "notes",
+    "description",
+    "_comment",
+}
 CONFIG_METRIC_KEYS = {
     "label",
     "unit",
@@ -1641,6 +1657,14 @@ def validate_config(config: dict, metrics: list[Metric] | None = None) -> tuple[
             if key in analysis and optional_float(analysis.get(key)) is None:
                 warnings.append(f"analysis.{key} 不是数字，将使用默认值。")
 
+    ui = config.get("ui", {})
+    if ui and not isinstance(ui, dict):
+        warnings.append("ui 必须是对象，已忽略。")
+    elif isinstance(ui, dict):
+        unknown_ui = sorted(set(ui) - CONFIG_UI_SECTIONS)
+        if unknown_ui:
+            warnings.append(f"ui 中未知配置段将被忽略：{', '.join(unknown_ui)}。")
+
     metric_configs = config.get("metrics", {})
     if metric_configs and not isinstance(metric_configs, dict):
         errors.append("metrics 必须是对象。")
@@ -1722,6 +1746,53 @@ def config_analysis_mode(config: dict) -> str:
     return GENERIC_MODE if str(value).strip().lower() in ("generic", "generic_timeseries", "通用时序") else PERFORMANCE_MODE
 
 
+def config_ui_section(config: dict, section: str) -> dict:
+    ui = config.get("ui", {})
+    value = ui.get(section, {}) if isinstance(ui, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def config_ui_value(config: dict, section: str, key: str, default: object) -> object:
+    return config_ui_section(config, section).get(key, default)
+
+
+def config_ui_float(config: dict, section: str, key: str, default: float) -> float:
+    value = config_ui_value(config, section, key, default)
+    parsed = optional_float(value)
+    return float(parsed) if parsed is not None else default
+
+
+def config_ui_int(config: dict, section: str, key: str, default: int) -> int:
+    value = config_ui_float(config, section, key, float(default))
+    return int(value)
+
+
+def config_ui_bool(config: dict, section: str, key: str, default: bool) -> bool:
+    value = config_ui_value(config, section, key, default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y", "是", "启用"):
+        return True
+    if text in ("false", "0", "no", "n", "否", "关闭"):
+        return False
+    return default
+
+
+def config_ui_choice(config: dict, section: str, key: str, options: list[str], default: str) -> str:
+    value = str(config_ui_value(config, section, key, default))
+    return value if value in options else default
+
+
+def config_ui_list(config: dict, section: str, key: str, default: list[str]) -> list[str]:
+    value = config_ui_value(config, section, key, default)
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return default
+
+
 def metric_config_entry(config: dict, metric: Metric) -> dict:
     metric_configs = config.get("metrics", {})
     candidates = [metric.key, metric.label]
@@ -1784,6 +1855,75 @@ def metric_bounds_from_import(config: dict, metric: Metric) -> tuple[float | Non
     return lower, upper
 
 
+def session_value(key: str, default: object) -> object:
+    return st.session_state.get(key, default)
+
+
+def build_ui_settings() -> dict:
+    return {
+        "trend": {
+            "show_rolling": session_value("trend_show_rolling", True),
+            "rolling_window": session_value("trend_rolling_window", 5),
+            "band_mode": session_value("trend_band_mode", "自动P5-P95"),
+        },
+        "alerts": {
+            "before_minutes": session_value("alert_before_minutes", 5.0),
+            "after_minutes": session_value("alert_after_minutes", 5.0),
+            "normalize_linked": session_value("alert_normalize_linked", True),
+            "linked_metrics": session_value("alert_linked_metrics", []),
+        },
+        "version_compare": {
+            "stat": session_value("version_compare_stat", "p95"),
+            "metric": session_value("version_compare_metric", ""),
+            "baseline_source": session_value("version_compare_baseline_source", ""),
+            "regression_threshold": session_value("version_regression_threshold", 15.0),
+        },
+        "baseline_growth": {
+            "baseline": session_value("baseline_growth_baseline", ""),
+            "stat": session_value("baseline_growth_stat", "p95"),
+            "metric": session_value("baseline_growth_metric", ""),
+        },
+        "distribution": {
+            "metric": session_value("distribution_metric", ""),
+            "control_metric": session_value("control_chart_metric", ""),
+            "control_scene": session_value("control_chart_scene", ""),
+        },
+        "efficiency": {
+            "metric": session_value("efficiency_metric", ""),
+            "scatter_y": session_value("efficiency_scatter_y", ""),
+        },
+        "sampling_interval": {
+            "scene": session_value("sampling_interval_scene", ""),
+        },
+        "decision": {
+            "max_allowed_level": session_value("decision_max_allowed_level", "中风险"),
+            "fail_on_leak": session_value("decision_fail_on_leak", True),
+            "fail_on_any_alert": session_value("decision_fail_on_any_alert", False),
+            "fail_on_errors": session_value("decision_fail_on_errors", False),
+        },
+        "capacity": {
+            "test_cpu_cores": session_value("capacity_test_cpu_cores", 8),
+            "target_cpu_utilization": session_value("capacity_target_cpu_utilization", 70.0),
+            "reserved_memory_gb": session_value("capacity_reserved_memory_gb", 2.0),
+            "throughput_targets": session_value("capacity_throughput_targets", "50,100,200"),
+        },
+        "configuration_recommendation": {
+            "test_cpu_cores": session_value("config_test_cpu_cores", 8),
+            "target_cpu_utilization": session_value("config_target_cpu_utilization", 70.0),
+            "minimum_cpu_cores": session_value("config_minimum_cpu_cores", 2),
+            "system_reserved_memory_gb": session_value("config_reserved_memory_gb", 2.0),
+            "minimum_memory_gb": session_value("config_minimum_memory_gb", 4),
+            "minimum_free_disk_gb": session_value("config_minimum_free_disk_gb", 10),
+            "recommendation_factor": session_value("config_recommendation_factor", 1.5),
+        },
+        "filters": {
+            "selected_sources": session_value("selected_sources", []),
+            "selected_groups": session_value("selected_scenes", []),
+            "selected_trend_metrics": session_value("selected_trend_metrics", []),
+        },
+    }
+
+
 def build_settings_config(
     field_aliases: dict[str, tuple[str, ...]],
     slope_threshold: float,
@@ -1793,12 +1933,15 @@ def build_settings_config(
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     analysis_mode: str = PERFORMANCE_MODE,
     group_label: str = "场景",
+    ui_settings: dict | None = None,
 ) -> dict:
     threshold_bounds = threshold_bounds or {}
     metric_settings = {}
     for metric in metrics:
         setting = {
             "label": metric.label,
+            "unit": metric.unit,
+            "threshold_label": metric.threshold_label,
             "threshold": thresholds.get(metric.key, metric.default_threshold),
             "direction": "higher" if metric.higher_is_worse else "lower",
         }
@@ -1819,6 +1962,7 @@ def build_settings_config(
             "warmup_minutes": warmup_minutes,
         },
         "metrics": metric_settings,
+        "ui": ui_settings or {},
     }
 
 
@@ -1921,23 +2065,27 @@ def render_trend(
     col1, col2, col3 = st.columns(3)
     show_rolling = col1.checkbox(
         "显示滚动均值",
-        value=True,
+        value=config_ui_bool(st.session_state.get("imported_config", {}), "trend", "show_rolling", True),
+        key="trend_show_rolling",
         help="按每个数据源/场景分别计算滚动平均，用于看清持续趋势，避免单个尖峰干扰判断。",
     )
     rolling_window = col2.number_input(
         "滚动窗口采样点数",
         min_value=2,
         max_value=200,
-        value=5,
+        value=config_ui_int(st.session_state.get("imported_config", {}), "trend", "rolling_window", 5),
         step=1,
+        key="trend_rolling_window",
         disabled=not show_rolling,
         help="窗口越大越平滑，但也会弱化短时间波动。这里按采样点数量计算，不按固定分钟数计算。",
     )
     default_band_mode = "配置上下限" if any(any(bound is not None for bound in bounds) for bounds in threshold_bounds.values()) else "自动P5-P95"
+    default_band_mode = config_ui_choice(st.session_state.get("imported_config", {}), "trend", "band_mode", ["关闭", "配置上下限", "自动P5-P95"], default_band_mode)
     band_mode = col3.selectbox(
         "上下限区间带",
         ["关闭", "配置上下限", "自动P5-P95"],
         index=["关闭", "配置上下限", "自动P5-P95"].index(default_band_mode),
+        key="trend_band_mode",
         help="配置上下限来自导入 JSON 的 lower_threshold / upper_threshold；自动 P5-P95 用当前筛选数据的分位区间做参考带。",
     )
 
@@ -2069,10 +2217,13 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
 
     metric_options = [metric.key for metric in available]
     metric_labels = {metric.key: metric.label for metric in available}
+    imported_config = st.session_state.get("imported_config", {})
     sanitize_select_state("distribution_metric", metric_options)
+    distribution_metric_default = config_ui_choice(imported_config, "distribution", "metric", metric_options, metric_options[0])
     metric_key = st.selectbox(
         "分布指标",
         metric_options,
+        index=safe_option_index(metric_options, distribution_metric_default),
         format_func=lambda key: metric_labels.get(key, key),
         key="distribution_metric",
         help="箱线图用于观察该指标在不同场景中的分布、离群点和波动范围。",
@@ -2115,10 +2266,11 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
         st.write("- 超出控制限表示统计波动异常，适合发现突发漂移、采集异常或工况突变。")
         st.write("- 控制图不是业务阈值；它回答的是“这段数据是否偏离自身历史波动范围”。")
     sanitize_select_state("control_chart_metric", metric_options)
+    control_metric_default = config_ui_choice(imported_config, "distribution", "control_metric", metric_options, metric.key)
     control_metric_key = st.selectbox(
         "控制图指标",
         metric_options,
-        index=safe_option_index(metric_options, metric.key),
+        index=safe_option_index(metric_options, control_metric_default),
         format_func=lambda key: metric_labels.get(key, key),
         key="control_chart_metric",
         help="选择要做统计过程控制的指标。建议选择连续采样、波动有业务意义的指标。",
@@ -2126,9 +2278,11 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
     control_metric = metric_by_key(available, control_metric_key)
     scene_options = list(filtered["display_scene"].drop_duplicates())
     sanitize_select_state("control_chart_scene", scene_options)
+    control_scene_default = config_ui_choice(imported_config, "distribution", "control_scene", scene_options, scene_options[0])
     control_scene = st.selectbox(
         "控制图场景",
         scene_options,
+        index=safe_option_index(scene_options, control_scene_default),
         key="control_chart_scene",
         help="控制图一次只展示一个场景或数据源，避免不同批次混在一起导致控制限失真。",
     )
@@ -2206,9 +2360,14 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
         st.info("当前数据缺少吞吐、并发、请求数等字段，无法绘制效率指标。")
         return
 
+    imported_config = st.session_state.get("imported_config", {})
+    sanitize_select_state("efficiency_metric", available)
+    efficiency_metric_default = config_ui_choice(imported_config, "efficiency", "metric", available, available[0])
     metric_column = st.selectbox(
         "效率指标",
         available,
+        index=safe_option_index(available, efficiency_metric_default),
+        key="efficiency_metric",
         help="效率指标会把资源消耗归一化到吞吐或并发口径，更适合判断资源上涨是否真的退化。",
     )
     chart_data = efficiency.copy()
@@ -2224,9 +2383,13 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
         if column in efficiency and efficiency[column].notna().any()
     ]
     if "平均吞吐" in efficiency and efficiency["平均吞吐"].notna().any() and scatter_y_options:
+        sanitize_select_state("efficiency_scatter_y", scatter_y_options)
+        scatter_y_default = config_ui_choice(imported_config, "efficiency", "scatter_y", scatter_y_options, scatter_y_options[0])
         scatter_y = st.selectbox(
             "散点图纵轴",
             scatter_y_options,
+            index=safe_option_index(scatter_y_options, scatter_y_default),
+            key="efficiency_scatter_y",
             help="横轴固定为平均吞吐。点越靠右表示吞吐越高，纵轴可切换 CPU、内存、响应时间等指标。",
         )
         scatter = px.scatter(
@@ -2322,26 +2485,32 @@ def render_decision(
         render_plotly_chart(radar_fig, "场景风险雷达图")
 
     st.markdown("**发布门禁**")
+    imported_config = st.session_state.get("imported_config", {})
     col1, col2, col3, col4 = st.columns(4)
+    max_allowed_default = config_ui_choice(imported_config, "decision", "max_allowed_level", ["低风险", "中风险", "高风险"], "中风险")
     max_allowed_level = col1.selectbox(
         "允许最高风险等级",
         ["低风险", "中风险", "高风险"],
-        index=1,
+        index=["低风险", "中风险", "高风险"].index(max_allowed_default),
+        key="decision_max_allowed_level",
         help="如果某个场景的风险等级高于这里选择的等级，发布门禁会判定失败。",
     )
     fail_on_leak = col2.checkbox(
         "疑似泄漏即失败",
-        value=True,
+        value=config_ui_bool(imported_config, "decision", "fail_on_leak", True),
+        key="decision_fail_on_leak",
         help="勾选后，只要任意场景被内存趋势检测标记为疑似泄漏，发布门禁就失败。",
     )
     fail_on_any_alert = col3.checkbox(
         "任意超阈即失败",
-        value=False,
+        value=config_ui_bool(imported_config, "decision", "fail_on_any_alert", False),
+        key="decision_fail_on_any_alert",
         help="勾选后，只要任意指标出现过超阈采样点，发布门禁就失败。适合严格准入场景。",
     )
     fail_on_errors = col4.checkbox(
         "请求失败即失败",
-        value=False,
+        value=config_ui_bool(imported_config, "decision", "fail_on_errors", False),
+        key="decision_fail_on_errors",
         help="勾选后，只要请求失败率大于 0，发布门禁就失败。需要 Excel 中有请求数和失败请求数字段。",
     )
     gate_status, gate_rules = release_gate_analysis(decisions, max_allowed_level, fail_on_leak, fail_on_any_alert, fail_on_errors)
@@ -2361,26 +2530,34 @@ def render_decision(
     test_cpu_cores = col5.number_input(
         "容量估算测试机CPU核数",
         min_value=1,
-        value=8,
+        value=config_ui_int(imported_config, "capacity", "test_cpu_cores", 8),
         step=1,
+        key="capacity_test_cpu_cores",
         help="采集这批性能数据时测试机的逻辑 CPU 核数，用于把 CPU% 换算成核心需求。",
     )
     target_cpu_utilization = col6.number_input(
         "容量估算目标CPU上限(%)",
         min_value=30.0,
         max_value=95.0,
-        value=70.0,
+        value=config_ui_float(imported_config, "capacity", "target_cpu_utilization", 70.0),
         step=5.0,
+        key="capacity_target_cpu_utilization",
         help="希望目标机器长期运行时 CPU 不超过的利用率。值越低，估算出的 CPU 核数越保守。",
     )
     reserved_memory = col7.number_input(
         "容量估算系统预留内存(GB)",
         min_value=0.0,
-        value=2.0,
+        value=config_ui_float(imported_config, "capacity", "reserved_memory_gb", 2.0),
         step=0.5,
+        key="capacity_reserved_memory_gb",
         help="为操作系统、后台进程和运行时预留的内存，会叠加到应用内存需求上。",
     )
-    throughput_text = st.text_input("目标吞吐列表", value="50,100,200", help="多个目标吞吐用英文逗号分隔，口径沿用效率页自动识别的 QPS/TPS/任务数/请求数。")
+    throughput_text = st.text_input(
+        "目标吞吐列表",
+        value=str(config_ui_value(imported_config, "capacity", "throughput_targets", "50,100,200")),
+        key="capacity_throughput_targets",
+        help="多个目标吞吐用英文逗号分隔，口径沿用效率页自动识别的 QPS/TPS/任务数/请求数。",
+    )
     try:
         targets = [float(item.strip()) for item in throughput_text.split(",") if item.strip()]
     except ValueError:
@@ -2523,9 +2700,29 @@ def render_alerts(
         )
         selected_segment = linked_segments[linked_segments["异常段标识"] == selected_segment_id].iloc[0]
         col1, col2, col3 = st.columns(3)
-        before_minutes = col1.number_input("前置窗口(分钟)", min_value=0.0, value=5.0, step=1.0, help="从异常开始时间向前扩展的观察窗口。")
-        after_minutes = col2.number_input("后置窗口(分钟)", min_value=0.0, value=5.0, step=1.0, help="从异常结束时间向后扩展的观察窗口。")
-        normalize_linked = col3.checkbox("标准化显示", value=True, help="把每个指标缩放到 0-1，便于不同单位的指标放在同一张图里比较形态。")
+        imported_config = st.session_state.get("imported_config", {})
+        before_minutes = col1.number_input(
+            "前置窗口(分钟)",
+            min_value=0.0,
+            value=config_ui_float(imported_config, "alerts", "before_minutes", 5.0),
+            step=1.0,
+            key="alert_before_minutes",
+            help="从异常开始时间向前扩展的观察窗口。",
+        )
+        after_minutes = col2.number_input(
+            "后置窗口(分钟)",
+            min_value=0.0,
+            value=config_ui_float(imported_config, "alerts", "after_minutes", 5.0),
+            step=1.0,
+            key="alert_after_minutes",
+            help="从异常结束时间向后扩展的观察窗口。",
+        )
+        normalize_linked = col3.checkbox(
+            "标准化显示",
+            value=config_ui_bool(imported_config, "alerts", "normalize_linked", True),
+            key="alert_normalize_linked",
+            help="把每个指标缩放到 0-1，便于不同单位的指标放在同一张图里比较形态。",
+        )
 
         scene_window = filtered[
             (filtered["source"] == selected_segment["数据源"])
@@ -2536,6 +2733,9 @@ def render_alerts(
         available_metric_keys = [metric.key for metric in metrics if metric.key in scene_window and scene_window[metric.key].notna().any()]
         metric_labels = {metric.key: metric.label for metric in metrics}
         default_linked_metrics = [selected_segment["指标key"]]
+        configured_linked_metrics = config_ui_list(imported_config, "alerts", "linked_metrics", [])
+        if configured_linked_metrics:
+            default_linked_metrics = configured_linked_metrics
         for candidate in available_metric_keys:
             if candidate not in default_linked_metrics:
                 default_linked_metrics.append(candidate)
@@ -2677,9 +2877,12 @@ def render_sampling_interval(data: pd.DataFrame, selected_scenes: list[str]) -> 
 
     line_scene_options = list(interval_data["display_scene"].drop_duplicates())
     sanitize_select_state("sampling_interval_scene", line_scene_options)
+    imported_config = st.session_state.get("imported_config", {})
+    line_scene_default = config_ui_choice(imported_config, "sampling_interval", "scene", line_scene_options, line_scene_options[0])
     line_scene = st.selectbox(
         "采样间隔时间线场景",
         line_scene_options,
+        index=safe_option_index(line_scene_options, line_scene_default),
         key="sampling_interval_scene",
         help="选择一个场景查看采样间隔随时间的变化，尖峰通常表示采集延迟或缺口。",
     )
@@ -2709,11 +2912,14 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
         return
 
     stats = with_display_label(stats) if "source" in stats.columns else stats.assign(display_scene=stats["scene"])
+    imported_config = st.session_state.get("imported_config", {})
     baseline_options = list(stats["display_scene"])
     sanitize_select_state("baseline_growth_baseline", baseline_options)
+    baseline_default = config_ui_choice(imported_config, "baseline_growth", "baseline", baseline_options, baseline_options[0])
     baseline = st.selectbox(
         "基准场景",
         baseline_options,
+        index=baseline_options.index(baseline_default),
         key="baseline_growth_baseline",
         help="选择一个场景作为对照组，其他场景会计算相对它的增长率。",
     )
@@ -2731,7 +2937,7 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
     stat_name = st.radio(
         "统计口径",
         list(stat_labels),
-        index=3,
+        index=list(stat_labels).index(config_ui_choice(imported_config, "baseline_growth", "stat", list(stat_labels), "p95")),
         format_func=stat_labels.get,
         horizontal=True,
         key="baseline_growth_stat",
@@ -2760,10 +2966,15 @@ def render_baseline_growth(data: pd.DataFrame, selected_scenes: list[str], metri
 
     metric_options = [metric.key for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
     metric_labels = {metric.key: metric.label for metric in metrics}
+    if not metric_options:
+        st.info("没有可用于绘制增长率图表的指标。")
+        return
     sanitize_select_state("baseline_growth_metric", metric_options)
+    baseline_metric_default = config_ui_choice(imported_config, "baseline_growth", "metric", metric_options, metric_options[0] if metric_options else "")
     metric_key = st.selectbox(
         "增长率图表指标",
         metric_options,
+        index=safe_option_index(metric_options, baseline_metric_default),
         format_func=lambda key: metric_labels.get(key, key),
         key="baseline_growth_metric",
         help="选择要绘制增长率柱状图的指标。",
@@ -2818,10 +3029,13 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
     if not metric_options:
         st.info("当前数据没有可用于版本对比的指标。")
         return
+    imported_config = st.session_state.get("imported_config", {})
     sanitize_select_state("version_compare_metric", metric_options)
+    version_metric_default = config_ui_choice(imported_config, "version_compare", "metric", metric_options, metric_options[0])
     metric_key = st.selectbox(
         "版本对比指标",
         metric_options,
+        index=safe_option_index(metric_options, version_metric_default),
         format_func=lambda key: metric_labels.get(key, key),
         key="version_compare_metric",
         help="选择要在不同 Excel 文件之间对比的指标。上传文件名会作为版本/批次标识。",
@@ -2841,7 +3055,7 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
     stat_name = st.radio(
         "版本对比口径",
         list(stat_labels),
-        index=3,
+        index=list(stat_labels).index(config_ui_choice(imported_config, "version_compare", "stat", list(stat_labels), "p95")),
         format_func=stat_labels.get,
         horizontal=True,
         key="version_compare_stat",
@@ -2853,17 +3067,20 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         return
     sources = list(stats["source"].dropna().unique())
     sanitize_select_state("version_compare_baseline_source", sources)
+    baseline_source_default = config_ui_choice(imported_config, "version_compare", "baseline_source", sources, sources[0])
     baseline_source = st.selectbox(
         "基准数据源",
         sources,
+        index=safe_option_index(sources, baseline_source_default),
         key="version_compare_baseline_source",
         help="选择作为基准版本或基准批次的数据源。其他数据源会和它逐场景比较。",
     )
     regression_threshold = st.number_input(
         "退化判定阈值(%)",
         min_value=0.0,
-        value=15.0,
+        value=config_ui_float(imported_config, "version_compare", "regression_threshold", 15.0),
         step=5.0,
+        key="version_regression_threshold",
         help="相对基准的变化超过该比例时标记为退化。对于 FPS、QPS 等越低越差的指标，会按下降幅度判断。",
     )
 
@@ -2924,27 +3141,31 @@ def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: flo
     st.subheader("最低运行配置建议")
     st.caption("该结论基于当前筛选数据推导，适合做初步配置建议；正式发布最低配置前，仍建议在目标低配机器上实测验证。")
 
+    imported_config = st.session_state.get("imported_config", {})
     col1, col2, col3 = st.columns(3)
     test_cpu_cores = col1.number_input(
         "测试机CPU核数",
         min_value=1,
-        value=8,
+        value=config_ui_int(imported_config, "configuration_recommendation", "test_cpu_cores", 8),
         step=1,
+        key="config_test_cpu_cores",
         help="采集性能数据时测试机的逻辑 CPU 核数，用于把 CPU P95 换算成目标机器核心需求。",
     )
     target_cpu_utilization = col2.number_input(
         "目标CPU利用率上限(%)",
         min_value=30.0,
         max_value=95.0,
-        value=70.0,
+        value=config_ui_float(imported_config, "configuration_recommendation", "target_cpu_utilization", 70.0),
         step=5.0,
+        key="config_target_cpu_utilization",
         help="希望目标机器长期运行时 CPU 不超过的利用率。通常 70% 是比较通用的保守值。",
     )
     minimum_cpu_cores = col3.number_input(
         "最低CPU核数下限",
         min_value=1,
-        value=2,
+        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_cpu_cores", 2),
         step=1,
+        key="config_minimum_cpu_cores",
         help="无论公式估算结果多低，最低配置都不会低于这个核数。",
     )
 
@@ -2952,22 +3173,25 @@ def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: flo
     system_reserved_memory_gb = col4.number_input(
         "系统和后台预留内存(GB)",
         min_value=0.0,
-        value=2.0,
+        value=config_ui_float(imported_config, "configuration_recommendation", "system_reserved_memory_gb", 2.0),
         step=0.5,
+        key="config_reserved_memory_gb",
         help="为操作系统、后台服务、运行时和缓存预留的内存，会叠加到应用内存峰值上。",
     )
     minimum_memory_gb = col5.number_input(
         "最低内存下限(GB)",
         min_value=1,
-        value=4,
+        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_memory_gb", 4),
         step=1,
+        key="config_minimum_memory_gb",
         help="无论公式估算结果多低，最低配置都不会低于这个内存容量。",
     )
     minimum_free_disk_gb = col6.number_input(
         "最低磁盘剩余空间(GB)",
         min_value=1,
-        value=10,
+        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_free_disk_gb", 10),
         step=1,
+        key="config_minimum_free_disk_gb",
         help="给安装包、日志、缓存、临时文件和运行数据预留的最低剩余磁盘空间。",
     )
 
@@ -2975,8 +3199,9 @@ def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: flo
         "推荐配置安全系数",
         min_value=1.0,
         max_value=2.5,
-        value=1.5,
+        value=config_ui_float(imported_config, "configuration_recommendation", "recommendation_factor", 1.5),
         step=0.1,
+        key="config_recommendation_factor",
         help="推荐配置会在最低配置基础上乘以该系数。系数越高，余量越大。",
     )
     config_table, notes = configuration_recommendation(
@@ -3088,6 +3313,7 @@ def main() -> None:
             help="可选。导入字段别名、阈值、告警方向、泄漏阈值和稳定区间。配置只覆盖能匹配上的指标，其他指标继续使用自动默认值。",
         )
         imported_config = parse_json_config(settings_file)
+        st.session_state["imported_config"] = imported_config
         if imported_config:
             st.caption("已加载分析配置；未匹配的指标会自动忽略。")
         default_mode = config_analysis_mode(imported_config)
@@ -3209,6 +3435,40 @@ def main() -> None:
                 threshold_bounds[metric.key] = (lower_bound, upper_bound)
         metrics = configured_metrics
 
+        st.header("筛选")
+        sanitize_multiselect_state("selected_sources", sources)
+        default_sources = [source for source in config_ui_list(imported_config, "filters", "selected_sources", sources) if source in sources] or sources
+        selected_sources = st.multiselect(
+            "数据源",
+            sources,
+            default=default_sources,
+            key="selected_sources",
+            help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
+        )
+        sanitize_multiselect_state("selected_scenes", scenes)
+        default_scenes = [scene for scene in config_ui_list(imported_config, "filters", "selected_groups", scenes) if scene in scenes] or scenes
+        selected_scenes = st.multiselect(
+            group_label,
+            scenes,
+            default=default_scenes,
+            key="selected_scenes",
+            help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
+        )
+        available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
+        available_metric_keys = [metric.key for metric in available_metrics]
+        sanitize_multiselect_state("selected_trend_metrics", available_metric_keys)
+        default_trend_metrics = [
+            metric for metric in config_ui_list(imported_config, "filters", "selected_trend_metrics", available_metric_keys[:3]) if metric in available_metric_keys
+        ] or available_metric_keys[:3]
+        selected_metrics = st.multiselect(
+            "趋势指标",
+            available_metric_keys,
+            default=default_trend_metrics,
+            key="selected_trend_metrics",
+            format_func=lambda key: metric_by_key(metrics, key).label,
+            help="选择趋势页要绘制的指标。这里不影响概览、报告和其他统计表。",
+        )
+
         current_config = build_settings_config(
             field_aliases,
             float(slope_threshold),
@@ -3218,42 +3478,14 @@ def main() -> None:
             threshold_bounds,
             analysis_mode,
             group_label,
+            build_ui_settings(),
         )
         st.download_button(
             "导出当前分析配置",
             config_to_json_bytes(current_config),
             file_name="perf_analyzer_config.json",
             mime="application/json",
-            help="导出当前字段别名、分析参数、阈值和告警方向。下次可直接导入复用；不同数据集只会应用能匹配上的指标。",
-        )
-
-        st.header("筛选")
-        sanitize_multiselect_state("selected_sources", sources)
-        selected_sources = st.multiselect(
-            "数据源",
-            sources,
-            default=sources,
-            key="selected_sources",
-            help="选择要参与分析的数据源。多文件上传时，每个文件名就是一个数据源。",
-        )
-        sanitize_multiselect_state("selected_scenes", scenes)
-        selected_scenes = st.multiselect(
-            group_label,
-            scenes,
-            default=scenes,
-            key="selected_scenes",
-            help=f"选择要参与分析的{group_label}。名称来自 Excel 的 sheet 名。",
-        )
-        available_metrics = [metric for metric in metrics if metric.key in data and not data[metric.key].dropna().empty]
-        available_metric_keys = [metric.key for metric in available_metrics]
-        sanitize_multiselect_state("selected_trend_metrics", available_metric_keys)
-        selected_metrics = st.multiselect(
-            "趋势指标",
-            available_metric_keys,
-            default=available_metric_keys[:3],
-            key="selected_trend_metrics",
-            format_func=lambda key: metric_by_key(metrics, key).label,
-            help="选择趋势页要绘制的指标。这里不影响概览、报告和其他统计表。",
+            help="导出当前字段别名、分析参数、阈值、告警方向、筛选条件和图表/决策配置。下次可直接导入复用。",
         )
 
     filtered_data = data[data["source"].isin(selected_sources) & data["scene"].isin(selected_scenes)].copy()

@@ -17,6 +17,59 @@
     "warmup_minutes": 0,
     "description": "group_label 控制页面分组名称；warmup_minutes 会排除每个分组开头 N 分钟数据。"
   },
+  "ui": {
+    "trend": {
+      "show_rolling": true,
+      "rolling_window": 10,
+      "band_mode": "配置上下限",
+      "description": "趋势页配置：band_mode 可选 关闭、配置上下限、自动P5-P95。"
+    },
+    "alerts": {
+      "before_minutes": 10,
+      "after_minutes": 10,
+      "normalize_linked": true,
+      "linked_metrics": [
+        "extra::温度",
+        "extra::压力",
+        "extra::电压"
+      ],
+      "description": "异常段联动图配置：异常段前后窗口和默认联动指标。"
+    },
+    "version_compare": {
+      "stat": "p95",
+      "metric": "extra::温度",
+      "baseline_source": "示例数据",
+      "regression_threshold": 15
+    },
+    "baseline_growth": {
+      "baseline": "设备A",
+      "stat": "p95",
+      "metric": "extra::温度"
+    },
+    "distribution": {
+      "metric": "extra::温度",
+      "control_metric": "extra::温度",
+      "control_scene": "设备A"
+    },
+    "sampling_interval": {
+      "scene": "设备A"
+    },
+    "filters": {
+      "selected_sources": [
+        "示例数据"
+      ],
+      "selected_groups": [
+        "设备A",
+        "设备B",
+        "设备C"
+      ],
+      "selected_trend_metrics": [
+        "extra::温度",
+        "extra::压力",
+        "extra::电压"
+      ]
+    }
+  },
   "metrics": {
     "温度": {
       "label": "温度",

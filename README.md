@@ -384,7 +384,7 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 
 ## 分析配置文件
 
-侧边栏支持导入和导出 JSON 分析配置，用于复用字段映射、阈值、告警方向和分析参数。
+侧边栏支持导入和导出 JSON 分析配置，用于复用字段映射、阈值、告警方向、分析参数、筛选条件和主要图表/决策配置。可以先在界面里调好字段映射、阈值、趋势图、异常联动、版本对比和决策参数，再点击“导出当前分析配置”，下次直接导入复用。
 
 配置文件示例：
 
@@ -401,6 +401,24 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
     "group_label": "设备",
     "memory_leak_slope_threshold": 2.0,
     "warmup_minutes": 1.0
+  },
+  "ui": {
+    "trend": {
+      "show_rolling": true,
+      "rolling_window": 10,
+      "band_mode": "配置上下限"
+    },
+    "alerts": {
+      "before_minutes": 5,
+      "after_minutes": 5,
+      "normalize_linked": true,
+      "linked_metrics": ["cpu_percent", "memory_percent"]
+    },
+    "filters": {
+      "selected_sources": ["示例数据"],
+      "selected_groups": ["轻载", "重载"],
+      "selected_trend_metrics": ["cpu_percent", "memory_mb"]
+    }
   },
   "metrics": {
     "cpu_percent": {
@@ -432,6 +450,7 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 - 当前 Excel 里有、配置文件里没有的指标会继续使用内置默认阈值或当前数据 P95。
 - 动态扩展指标可以用原始列名匹配，也可以用内部 key `extra::原始列名` 匹配。
 - `mode` 可设置为 `performance` 或 `generic_timeseries`，分别对应“应用性能”和“通用时序”。
+- `fields` 用于字段映射持久化。界面“自定义字段映射”里填写的别名会导出到这里；下次导入会自动回填。
 - `group_label` 用于把 sheet 分组显示为“场景”“设备”“批次”“工况”等。
 - 指标配置中的 `label` 和 `unit` 会影响页面展示名和单位。
 - 告警方向支持 `higher` / `lower`，也兼容 `越高越差` / `越低越差`。
@@ -452,8 +471,24 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 | `metrics.*.lower_threshold` | `metrics` | 正常区间下限，低于该值算异常 |
 | `metrics.*.upper_threshold` | `metrics` | 正常区间上限，高于该值算异常 |
 | `metrics.*.description` | `metrics` | 配置备注，不参与计算 |
+| `ui.trend.show_rolling` | `ui.trend` | 趋势页是否显示滚动均值 |
+| `ui.trend.rolling_window` | `ui.trend` | 滚动均值窗口采样点数 |
+| `ui.trend.band_mode` | `ui.trend` | 趋势区间带，可选 `关闭`、`配置上下限`、`自动P5-P95` |
+| `ui.alerts.before_minutes` | `ui.alerts` | 异常段联动图向前扩展的分钟数 |
+| `ui.alerts.after_minutes` | `ui.alerts` | 异常段联动图向后扩展的分钟数 |
+| `ui.alerts.normalize_linked` | `ui.alerts` | 异常段联动图是否标准化显示 |
+| `ui.alerts.linked_metrics` | `ui.alerts` | 异常段联动图默认指标列表 |
+| `ui.version_compare.*` | `ui.version_compare` | 多版本对比指标、统计口径、基准数据源和退化阈值 |
+| `ui.baseline_growth.*` | `ui.baseline_growth` | 基准增长页的基准分组、统计口径和指标 |
+| `ui.distribution.*` | `ui.distribution` | 分布页指标、控制图指标和控制图分组 |
+| `ui.efficiency.*` | `ui.efficiency` | 资源效率页柱状图指标和散点图纵轴 |
+| `ui.sampling_interval.scene` | `ui.sampling_interval` | 采样间隔时间线默认分组 |
+| `ui.decision.*` | `ui.decision` | 发布门禁允许风险等级和失败规则 |
+| `ui.capacity.*` | `ui.capacity` | 决策页容量估算参数 |
+| `ui.configuration_recommendation.*` | `ui.configuration_recommendation` | 配置建议页 CPU、内存、磁盘和安全系数参数 |
+| `ui.filters.*` | `ui.filters` | 数据源、分组和趋势指标筛选条件 |
 
-页面会显示当前数据识别到的指标数和配置命中的指标数。导入配置后，阈值区可以只显示“配置命中指标”，避免侧边栏被大量动态指标撑满。也可以随时点击“导出当前分析配置”，把当前页面上的阈值、方向、字段别名和分析参数保存成 JSON，下次复用。
+页面会显示当前数据识别到的指标数和配置命中的指标数。导入配置后，阈值区可以只显示“配置命中指标”，避免侧边栏被大量动态指标撑满。也可以随时点击“导出当前分析配置”，把当前页面上的字段映射、阈值、方向、上下限、筛选条件和主要 UI 参数保存成 JSON，下次复用。
 
 导入配置后，侧边栏会进行配置校验：
 

@@ -47,6 +47,85 @@
     "warmup_minutes": 1.0,
     "description": "memory_leak_slope_threshold 单位为 MB/分钟；warmup_minutes 会排除每个场景开头 N 分钟数据。"
   },
+  "ui": {
+    "trend": {
+      "show_rolling": true,
+      "rolling_window": 10,
+      "band_mode": "配置上下限",
+      "description": "趋势页配置：band_mode 可选 关闭、配置上下限、自动P5-P95。"
+    },
+    "alerts": {
+      "before_minutes": 5,
+      "after_minutes": 5,
+      "normalize_linked": true,
+      "linked_metrics": [
+        "cpu_percent",
+        "memory_percent",
+        "response_time_ms",
+        "failed_requests"
+      ]
+    },
+    "version_compare": {
+      "stat": "p95",
+      "metric": "cpu_percent",
+      "baseline_source": "示例数据",
+      "regression_threshold": 15
+    },
+    "baseline_growth": {
+      "baseline": "轻载",
+      "stat": "p95",
+      "metric": "cpu_percent"
+    },
+    "distribution": {
+      "metric": "cpu_percent",
+      "control_metric": "cpu_percent",
+      "control_scene": "轻载"
+    },
+    "efficiency": {
+      "metric": "CPU P95/吞吐",
+      "scatter_y": "CPU P95"
+    },
+    "sampling_interval": {
+      "scene": "轻载"
+    },
+    "decision": {
+      "max_allowed_level": "中风险",
+      "fail_on_leak": true,
+      "fail_on_any_alert": false,
+      "fail_on_errors": false
+    },
+    "capacity": {
+      "test_cpu_cores": 8,
+      "target_cpu_utilization": 70,
+      "reserved_memory_gb": 2,
+      "throughput_targets": "50,100,200"
+    },
+    "configuration_recommendation": {
+      "test_cpu_cores": 8,
+      "target_cpu_utilization": 70,
+      "minimum_cpu_cores": 2,
+      "system_reserved_memory_gb": 2,
+      "minimum_memory_gb": 4,
+      "minimum_free_disk_gb": 10,
+      "recommendation_factor": 1.5
+    },
+    "filters": {
+      "selected_sources": [
+        "示例数据"
+      ],
+      "selected_groups": [
+        "轻载",
+        "重载",
+        "后台空闲",
+        "冷启动"
+      ],
+      "selected_trend_metrics": [
+        "cpu_percent",
+        "memory_mb",
+        "memory_percent"
+      ]
+    }
+  },
   "metrics": {
     "cpu_percent": {
       "label": "CPU",
