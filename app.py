@@ -226,6 +226,41 @@ def find_column(
     return None
 
 
+def parse_timestamp_series(series: pd.Series) -> pd.Series:
+    values = series.copy()
+    if pd.api.types.is_datetime64_any_dtype(values):
+        parsed = pd.to_datetime(values, errors="coerce")
+    elif pd.api.types.is_numeric_dtype(values):
+        numeric = pd.to_numeric(values, errors="coerce")
+        sample = numeric.dropna().abs()
+        if sample.empty:
+            parsed = pd.to_datetime(values, errors="coerce")
+        else:
+            median = float(sample.median())
+            if median >= 1e17:
+                parsed = pd.to_datetime(numeric, unit="ns", errors="coerce")
+            elif median >= 1e14:
+                parsed = pd.to_datetime(numeric, unit="us", errors="coerce")
+            elif median >= 1e11:
+                parsed = pd.to_datetime(numeric, unit="ms", errors="coerce")
+            elif median >= 1e9:
+                parsed = pd.to_datetime(numeric, unit="s", errors="coerce")
+            else:
+                parsed = pd.to_datetime(numeric, unit="D", origin="1899-12-30", errors="coerce")
+    else:
+        text = values.astype("string").str.strip()
+        text = text.mask(text.isin(["", "nan", "NaN", "None", "NaT"]))
+        try:
+            parsed = pd.to_datetime(text, errors="coerce", format="mixed")
+        except ValueError:
+            parsed = pd.to_datetime(text, errors="coerce")
+
+    parsed = pd.Series(parsed, index=series.index)
+    if pd.api.types.is_datetime64tz_dtype(parsed):
+        parsed = parsed.dt.tz_convert(None)
+    return parsed
+
+
 def normalize_scene(df: pd.DataFrame, scene_name: str, source_name: str, field_aliases: dict[str, tuple[str, ...]]) -> pd.DataFrame:
     # 每个场景 sheet 先做“标准字段映射”，把不同工具导出的表头统一成内部字段名。
     columns = [str(column) for column in df.columns]
@@ -275,7 +310,7 @@ def normalize_scene(df: pd.DataFrame, scene_name: str, source_name: str, field_a
             normalized[target] = np.nan
         elif target == "timestamp":
             used_sources.add(source)
-            normalized[target] = pd.to_datetime(df[source], errors="coerce")
+            normalized[target] = parse_timestamp_series(df[source])
         else:
             used_sources.add(source)
             normalized[target] = pd.to_numeric(df[source], errors="coerce")
@@ -308,7 +343,7 @@ def normalize_generic_timeseries(df: pd.DataFrame, group_name: str, source_name:
         normalized["timestamp"] = pd.NaT
         used_sources = set()
     else:
-        normalized["timestamp"] = pd.to_datetime(df[timestamp_column], errors="coerce")
+        normalized["timestamp"] = parse_timestamp_series(df[timestamp_column])
         used_sources = {timestamp_column}
 
     for column in columns:
