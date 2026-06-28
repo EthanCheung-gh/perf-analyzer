@@ -58,7 +58,6 @@ from perf_analyzer.config import (
     metric_config_entry,
     metric_bounds_from_import,
     threshold_from_import,
-    validate_config,
 )
 from perf_analyzer.constants import (
     ANALYSIS_MODES,
@@ -68,19 +67,9 @@ from perf_analyzer.constants import (
     SAMPLE_FILE,
 )
 from perf_analyzer.export import build_batch_export_zip as build_batch_export_zip_core
-from perf_analyzer.export import dataframe_to_csv_bytes
 from perf_analyzer.io import non_numeric_column_summary, read_single_workbook, timestamp_diagnostics
 from perf_analyzer.metrics import discover_metrics, metric_by_key
 from perf_analyzer.models import Metric
-from perf_analyzer.quality import metric_quality_summary, sampling_gap_issue_summary, timestamp_quality_summary
-from perf_analyzer.report import (
-    build_conclusions,
-    build_generic_conclusions,
-    build_generic_report_markdown,
-    build_report_html,
-    build_report_markdown,
-    dataframe_to_markdown,
-)
 from perf_analyzer.stats import coefficient_of_variation, iqr, percentile, percentile_95
 from perf_analyzer.time_utils import rolling_points_for_group, typical_sampling_seconds
 from perf_analyzer.ui_helpers import (
@@ -95,6 +84,8 @@ from perf_analyzer.ui_helpers import (
 from perf_analyzer.utils import (
     parse_aliases,
 )
+from perf_analyzer.views_quality import render_config_validation, render_data_quality, render_timestamp_diagnostics
+from perf_analyzer.views_report import render_configuration_recommendation, render_generic_report, render_report
 
 
 @st.cache_data(show_spinner=False)
@@ -157,162 +148,6 @@ def parse_json_config(uploaded_file: object | None) -> dict:
     except Exception as exc:
         st.sidebar.warning(f"配置文件读取失败：{exc}")
         return {}
-
-
-def render_config_validation(config: dict, metrics: list[Metric] | None = None) -> None:
-    errors, warnings = validate_config(config, metrics)
-    if not errors and not warnings:
-        if config:
-            st.sidebar.success("配置校验通过。")
-        return
-    with st.sidebar.expander("配置校验", expanded=bool(errors)):
-        for error in errors:
-            st.error(error)
-        for warning in warnings:
-            st.warning(warning)
-
-
-def render_timestamp_diagnostics(raw_summary: pd.DataFrame, failures: pd.DataFrame, data: pd.DataFrame) -> None:
-    quality = timestamp_quality_summary(data)
-    has_parse_failures = not raw_summary.empty and int(raw_summary["解析失败数"].fillna(0).sum()) > 0
-    has_quality_issues = (
-        not quality.empty
-        and (
-            int(quality["重复时间戳"].fillna(0).sum()) > 0
-            or int(quality["乱序次数"].fillna(0).sum()) > 0
-            or int(quality["负采样间隔"].fillna(0).sum()) > 0
-        )
-    )
-    expanded = bool(has_parse_failures or has_quality_issues)
-    with st.expander("时间字段诊断", expanded=expanded):
-        st.caption("用于确认时间列识别、解析成功率、毫秒精度、重复时间戳和采样顺序问题。")
-        if raw_summary.empty:
-            st.info("没有可展示的原始时间列诊断。")
-        else:
-            total_rows = int(raw_summary["总行数"].fillna(0).sum())
-            total_non_empty = int(raw_summary["非空时间值"].fillna(0).sum())
-            total_success = int(raw_summary["解析成功数"].fillna(0).sum())
-            total_failed = int(raw_summary["解析失败数"].fillna(0).sum())
-            success_rate = total_success / total_non_empty * 100 if total_non_empty else np.nan
-            min_time = data["timestamp"].min() if "timestamp" in data and not data.empty else pd.NaT
-            max_time = data["timestamp"].max() if "timestamp" in data and not data.empty else pd.NaT
-            has_subsecond = (
-                bool(((data["timestamp"].dropna().dt.microsecond != 0) | (data["timestamp"].dropna().dt.nanosecond != 0)).any())
-                if "timestamp" in data and data["timestamp"].notna().any()
-                else False
-            )
-
-            cols = st.columns(6)
-            cols[0].metric("原始行数", f"{total_rows:,}")
-            cols[1].metric("非空时间值", f"{total_non_empty:,}")
-            cols[2].metric("解析成功率", "-" if pd.isna(success_rate) else f"{success_rate:.1f}%")
-            cols[3].metric("解析失败", f"{total_failed:,}")
-            cols[4].metric("毫秒/亚秒", "是" if has_subsecond else "否")
-            cols[5].metric("有效分组", f"{data[['source', 'scene']].drop_duplicates().shape[0] if not data.empty else 0:,}")
-
-            if pd.notna(min_time) and pd.notna(max_time):
-                st.caption(f"时间范围：{min_time} 至 {max_time}，总跨度 {max_time - min_time}")
-            st.markdown("**原始时间列解析摘要**")
-            st.dataframe(raw_summary, use_container_width=True, hide_index=True)
-            st.download_button(
-                "下载时间解析摘要 CSV",
-                raw_summary.to_csv(index=False).encode("utf-8-sig"),
-                file_name="timestamp_parse_summary.csv",
-                mime="text/csv",
-            )
-
-        if not failures.empty:
-            st.markdown("**解析失败样本 Top5/分组**")
-            st.dataframe(failures, use_container_width=True, hide_index=True)
-            st.download_button(
-                "下载时间解析失败样本 CSV",
-                failures.to_csv(index=False).encode("utf-8-sig"),
-                file_name="timestamp_parse_failures.csv",
-                mime="text/csv",
-            )
-
-        if quality.empty:
-            st.info("没有足够的有效时间点用于时间序列质量诊断。")
-        else:
-            st.markdown("**时间序列质量**")
-            st.dataframe(quality, use_container_width=True, hide_index=True)
-            st.download_button(
-                "下载时间序列质量 CSV",
-                quality.to_csv(index=False).encode("utf-8-sig"),
-                file_name="timestamp_quality.csv",
-                mime="text/csv",
-            )
-
-
-def render_data_quality(
-    data: pd.DataFrame,
-    metrics: list[Metric],
-    non_numeric_columns: pd.DataFrame,
-) -> None:
-    st.subheader("数据质量")
-    with st.expander("口径说明", expanded=False):
-        st.write("- 时间质量用于发现重复时间戳、乱序时间和负采样间隔。")
-        st.write("- 指标质量用于发现空值率高、全空、常量和疑似极端值的指标。")
-        st.write("- 采样间隔突变按同一数据源/分组的中位采样间隔 3 倍作为参考阈值。")
-        st.write("- 未识别非数值列不会进入指标分析，通常是备注、状态、标签等字段。")
-
-    time_quality = timestamp_quality_summary(data)
-    metric_quality = metric_quality_summary(data, metrics)
-    interval_data, _ = build_sampling_interval_tables(data)
-    gap_quality = sampling_gap_issue_summary(interval_data)
-
-    duplicate_count = int(time_quality["重复时间戳"].fillna(0).sum()) if not time_quality.empty else 0
-    disorder_count = int(time_quality["乱序次数"].fillna(0).sum()) if not time_quality.empty else 0
-    high_null_count = int((metric_quality["空值率(%)"].fillna(0) >= 50).sum()) if not metric_quality.empty else 0
-    constant_count = int((metric_quality["常量"] == "是").sum()) if not metric_quality.empty else 0
-    gap_count = int(gap_quality["突变次数"].fillna(0).sum()) if not gap_quality.empty else 0
-
-    cols = st.columns(5)
-    cols[0].metric("重复时间戳", f"{duplicate_count:,}")
-    cols[1].metric("乱序时间", f"{disorder_count:,}")
-    cols[2].metric("高空值指标", f"{high_null_count:,}")
-    cols[3].metric("常量指标", f"{constant_count:,}")
-    cols[4].metric("采样突变", f"{gap_count:,}")
-
-    if not time_quality.empty:
-        st.markdown("**时间质量**")
-        st.dataframe(time_quality, use_container_width=True, hide_index=True)
-        st.download_button(
-            "下载时间质量 CSV",
-            dataframe_to_csv_bytes(time_quality),
-            file_name="data_quality_timestamp.csv",
-            mime="text/csv",
-        )
-
-    if not metric_quality.empty:
-        st.markdown("**指标质量**")
-        st.dataframe(metric_quality, use_container_width=True, hide_index=True)
-        st.download_button(
-            "下载指标质量 CSV",
-            dataframe_to_csv_bytes(metric_quality),
-            file_name="data_quality_metrics.csv",
-            mime="text/csv",
-        )
-
-    if not gap_quality.empty:
-        st.markdown("**采样间隔突变**")
-        st.dataframe(gap_quality, use_container_width=True, hide_index=True)
-        st.download_button(
-            "下载采样突变 CSV",
-            dataframe_to_csv_bytes(gap_quality),
-            file_name="data_quality_sampling_gaps.csv",
-            mime="text/csv",
-        )
-
-    if not non_numeric_columns.empty:
-        st.markdown("**未识别非数值列**")
-        st.dataframe(non_numeric_columns, use_container_width=True, hide_index=True)
-        st.download_button(
-            "下载未识别非数值列 CSV",
-            dataframe_to_csv_bytes(non_numeric_columns),
-            file_name="data_quality_non_numeric_columns.csv",
-            mime="text/csv",
-        )
 
 
 def session_value(key: str, default: object) -> object:
@@ -1647,159 +1482,6 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
     render_plotly_chart(fig, f"版本对比_{metric.label}_{stat_labels[stat_name]}")
 
 
-def render_configuration_recommendation(data: pd.DataFrame, slope_threshold: float) -> tuple[pd.DataFrame, list[str]]:
-    st.subheader("最低运行配置建议")
-    st.caption("该结论基于当前筛选数据推导，适合做初步配置建议；正式发布最低配置前，仍建议在目标低配机器上实测验证。")
-
-    imported_config = st.session_state.get("imported_config", {})
-    col1, col2, col3 = st.columns(3)
-    test_cpu_cores = col1.number_input(
-        "测试机CPU核数",
-        min_value=1,
-        value=config_ui_int(imported_config, "configuration_recommendation", "test_cpu_cores", 8),
-        step=1,
-        key="config_test_cpu_cores",
-        help="采集性能数据时测试机的逻辑 CPU 核数，用于把 CPU P95 换算成目标机器核心需求。",
-    )
-    target_cpu_utilization = col2.number_input(
-        "目标CPU利用率上限(%)",
-        min_value=30.0,
-        max_value=95.0,
-        value=config_ui_float(imported_config, "configuration_recommendation", "target_cpu_utilization", 70.0),
-        step=5.0,
-        key="config_target_cpu_utilization",
-        help="希望目标机器长期运行时 CPU 不超过的利用率。通常 70% 是比较通用的保守值。",
-    )
-    minimum_cpu_cores = col3.number_input(
-        "最低CPU核数下限",
-        min_value=1,
-        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_cpu_cores", 2),
-        step=1,
-        key="config_minimum_cpu_cores",
-        help="无论公式估算结果多低，最低配置都不会低于这个核数。",
-    )
-
-    col4, col5, col6 = st.columns(3)
-    system_reserved_memory_gb = col4.number_input(
-        "系统和后台预留内存(GB)",
-        min_value=0.0,
-        value=config_ui_float(imported_config, "configuration_recommendation", "system_reserved_memory_gb", 2.0),
-        step=0.5,
-        key="config_reserved_memory_gb",
-        help="为操作系统、后台服务、运行时和缓存预留的内存，会叠加到应用内存峰值上。",
-    )
-    minimum_memory_gb = col5.number_input(
-        "最低内存下限(GB)",
-        min_value=1,
-        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_memory_gb", 4),
-        step=1,
-        key="config_minimum_memory_gb",
-        help="无论公式估算结果多低，最低配置都不会低于这个内存容量。",
-    )
-    minimum_free_disk_gb = col6.number_input(
-        "最低磁盘剩余空间(GB)",
-        min_value=1,
-        value=config_ui_int(imported_config, "configuration_recommendation", "minimum_free_disk_gb", 10),
-        step=1,
-        key="config_minimum_free_disk_gb",
-        help="给安装包、日志、缓存、临时文件和运行数据预留的最低剩余磁盘空间。",
-    )
-
-    recommendation_factor = st.slider(
-        "推荐配置安全系数",
-        min_value=1.0,
-        max_value=2.5,
-        value=config_ui_float(imported_config, "configuration_recommendation", "recommendation_factor", 1.5),
-        step=0.1,
-        key="config_recommendation_factor",
-        help="推荐配置会在最低配置基础上乘以该系数。系数越高，余量越大。",
-    )
-    config_table, notes = configuration_recommendation(
-        data,
-        int(test_cpu_cores),
-        float(target_cpu_utilization),
-        int(minimum_cpu_cores),
-        float(system_reserved_memory_gb),
-        int(minimum_memory_gb),
-        int(minimum_free_disk_gb),
-        float(recommendation_factor),
-        slope_threshold,
-    )
-
-    st.dataframe(config_table, use_container_width=True, hide_index=True)
-
-    st.markdown("**推导说明**")
-    for note in notes:
-        st.write(f"- {note}")
-
-    st.markdown("**是否需要更多数据指标**")
-    st.write("- 如果要更准确估算 CPU 核数，最好补充每核 CPU 使用率、进程 CPU 时间、任务吞吐量、响应时间或队列长度。只有总 CPU% 时，只能按总体占用近似换算。")
-    st.write("- 如果软件有并发、批处理或服务端请求，建议补充并发数、TPS/QPS、任务量、数据规模，才能把配置结论和业务容量绑定。")
-    st.write("- 如果 IO 可能是瓶颈，建议补充磁盘读写吞吐、IOPS、IO 等待时间、网络吞吐和错误重试次数。")
-    st.write("- 如果需要正式发布最低配置，建议在至少一台目标低配机器上跑关键场景和长稳场景验证。")
-    return config_table, notes
-
-
-def render_report(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    slope_threshold: float,
-    metrics: list[Metric],
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-    config_table: pd.DataFrame | None = None,
-    config_notes: list[str] | None = None,
-) -> None:
-    st.subheader("测试结论与报告导出")
-    conclusions = build_conclusions(data, thresholds, slope_threshold, metrics, threshold_bounds)
-    for item in conclusions:
-        st.write(f"- {item}")
-
-    markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
-    html_report = build_report_html(markdown_report)
-    st.download_button(
-        "下载 Markdown 报告",
-        markdown_report.encode("utf-8-sig"),
-        file_name="resource_report.md",
-        mime="text/markdown",
-    )
-    st.download_button(
-        "下载 HTML 报告",
-        html_report.encode("utf-8-sig"),
-        file_name="resource_report.html",
-        mime="text/html",
-    )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
-
-
-def render_generic_report(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    metrics: list[Metric],
-    group_label: str,
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-) -> None:
-    st.subheader("分析报告导出")
-    conclusions = build_generic_conclusions(data, thresholds, metrics, threshold_bounds)
-    for item in conclusions:
-        st.write(f"- {item}")
-
-    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds)
-    html_report = build_report_html(markdown_report)
-    st.download_button(
-        "下载 Markdown 报告",
-        markdown_report.encode("utf-8-sig"),
-        file_name="timeseries_report.md",
-        mime="text/markdown",
-    )
-    st.download_button(
-        "下载 HTML 报告",
-        html_report.encode("utf-8-sig"),
-        file_name="timeseries_report.html",
-        mime="text/html",
-    )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
-
-
 def ensure_sample_file(path: Path) -> None:
     if not path.exists():
         st.error(f"未找到示例数据：{path}")
@@ -2096,7 +1778,7 @@ def main() -> None:
         with tabs[6]:
             render_alerts(filtered_data, selected_scenes, thresholds, metrics, threshold_bounds)
         with tabs[7]:
-            render_data_quality(filtered_data, metrics, non_numeric_columns)
+            render_data_quality(filtered_data, metrics, non_numeric_columns, build_sampling_interval_tables)
         with tabs[8]:
             render_generic_report(filtered_data, thresholds, metrics, group_label, threshold_bounds)
         with tabs[9]:
@@ -2137,7 +1819,7 @@ def main() -> None:
         with tabs[10]:
             render_alerts(filtered_data, selected_scenes, thresholds, metrics, threshold_bounds)
         with tabs[11]:
-            render_data_quality(filtered_data, metrics, non_numeric_columns)
+            render_data_quality(filtered_data, metrics, non_numeric_columns, build_sampling_interval_tables)
         with tabs[12]:
             if config_table.empty:
                 config_table, config_notes = configuration_recommendation(
