@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -10,6 +8,7 @@ from .config import validate_config
 from .export import dataframe_to_csv_bytes
 from .models import Metric
 from .quality import metric_quality_summary, sampling_gap_issue_summary, timestamp_quality_summary
+from .views_sampling import build_sampling_interval_tables
 
 
 def render_config_validation(config: dict, metrics: list[Metric] | None = None) -> None:
@@ -101,7 +100,6 @@ def render_data_quality(
     data: pd.DataFrame,
     metrics: list[Metric],
     non_numeric_columns: pd.DataFrame,
-    build_sampling_interval_tables: Callable[[pd.DataFrame], tuple[pd.DataFrame, pd.DataFrame]],
 ) -> None:
     st.subheader("数据质量")
     with st.expander("口径说明", expanded=False):
