@@ -11,18 +11,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from perf_analyzer.analysis import (
-    alert_continuity_summary,
-    apply_stable_window,
-    configuration_recommendation,
-    summarize,
-)
+from perf_analyzer.analysis import apply_stable_window, configuration_recommendation
 from perf_analyzer.alerts import (
     format_duration,
     format_peak_offset,
-    format_value,
     max_continuous_alert_minutes,
-    metric_alert_mask,
 )
 from perf_analyzer.config import (
     build_config_template,
@@ -71,6 +64,7 @@ from perf_analyzer.views_alerts import build_alert_timeline_figure, build_alerts
 from perf_analyzer.views_baseline import render_baseline_growth, render_leak_detection, render_version_compare
 from perf_analyzer.views_decision import render_decision, render_efficiency
 from perf_analyzer.views_distribution import build_distribution_figure, render_comparison, render_distribution
+from perf_analyzer.views_overview import render_overview
 from perf_analyzer.views_quality import render_config_validation, render_data_quality, render_timestamp_diagnostics
 from perf_analyzer.views_report import render_configuration_recommendation, render_generic_report, render_report
 from perf_analyzer.views_sampling import (
@@ -212,46 +206,6 @@ def build_ui_settings() -> dict:
             "selected_trend_metrics": session_value("selected_trend_metrics", []),
         },
     }
-
-
-def render_overview(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    metrics: list[Metric],
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-) -> None:
-    st.subheader("概览")
-    cols = st.columns(5)
-    cols[0].metric("场景数", data["scene"].nunique())
-    cols[1].metric("样本数", f"{len(data):,}")
-    cols[2].metric("CPU峰值", format_value(data["cpu_percent"].max(), "%") if "cpu_percent" in data else "-")
-    cols[3].metric("内存峰值", format_value(data["memory_mb"].max(), "MB") if "memory_mb" in data else "-")
-    cols[4].metric("告警点", f"{count_alerts(data, thresholds, metrics, threshold_bounds):,}")
-
-    summary = summarize(data, thresholds, metrics, threshold_bounds)
-    st.dataframe(summary, use_container_width=True, hide_index=True)
-
-    alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
-    if not alert_summary.empty:
-        st.markdown("**告警持续性摘要**")
-        st.dataframe(
-            alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore"),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-def count_alerts(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    metrics: list[Metric],
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-) -> int:
-    total = 0
-    for metric in metrics:
-        if metric.key in data:
-            total += int(metric_alert_mask(data[metric.key], metric, thresholds, threshold_bounds).sum())
-    return total
 
 
 def add_trend_reference_layers(
