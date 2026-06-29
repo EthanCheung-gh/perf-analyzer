@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 from dataclasses import replace
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -43,6 +41,8 @@ from perf_analyzer.export_adapter import build_batch_export_zip
 from perf_analyzer.metrics import discover_metrics, metric_by_key
 from perf_analyzer.models import Metric
 from perf_analyzer.ui_helpers import (
+    ensure_sample_file,
+    parse_json_config,
     render_system_info,
     sanitize_multiselect_state,
     sync_filter_context,
@@ -62,23 +62,6 @@ from perf_analyzer.views_sampling import (
     render_sampling_interval,
 )
 from perf_analyzer.views_trend import render_trend
-
-
-def parse_json_config(uploaded_file: object | None) -> dict:
-    if uploaded_file is None:
-        return {}
-    try:
-        payload = uploaded_file.getvalue()
-        return json.loads(payload.decode("utf-8-sig"))
-    except Exception as exc:
-        st.sidebar.warning(f"配置文件读取失败：{exc}")
-        return {}
-
-
-def ensure_sample_file(path: Path) -> None:
-    if not path.exists():
-        st.error(f"未找到示例数据：{path}")
-        st.stop()
 
 
 def main() -> None:
