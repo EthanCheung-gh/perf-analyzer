@@ -30,6 +30,7 @@ from perf_analyzer.constants import (
     ANALYSIS_MODES,
     GENERIC_MODE,
     GENERIC_SAMPLE_FILE,
+    MAPPING_FIELDS,
     SAMPLE_FILE,
 )
 from perf_analyzer.data_loader import (
