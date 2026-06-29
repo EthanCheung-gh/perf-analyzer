@@ -1,250 +1,287 @@
 # 代码地图
 
-本文档基于 CodeGraph 对当前代码结构的索引结果整理，用于快速理解 `perf-analyzer` 的入口、数据流、配置流和图表渲染链路。
+本文档记录 `perf-analyzer` 当前模块化后的代码结构，用于快速理解入口、数据流、配置流、视图层和导出链路。
 
 ## 总览
 
-当前项目主要由两个 Python 文件组成：
+当前项目已经从单体 `app.py` 拆分为 Streamlit 入口、数据处理、分析计算、视图渲染和导出适配等模块。
 
-- `app.py`：Streamlit 应用主体，包含数据导入、字段映射、指标识别、分析计算、图表渲染、配置导入导出和报告导出。
-- `generate_sample_data.py`：生成应用性能模式的示例 Excel 数据。
+核心入口：
 
-核心架构特点：
+- `app.py`：Streamlit 页面编排入口。当前只保留 `main()`，负责侧边栏输入、数据加载、筛选、配置导出、批量导出和 tab 编排。
+- `generate_sample_data.py`：生成应用性能模式示例 Excel。
 
-- 单入口：`main()` 负责页面编排和侧边栏配置。
-- 单数据模型：上传的多个 Excel 会统一转换为包含 `source`、`scene`、`timestamp` 和指标列的 DataFrame。
-- 双模式：`应用性能` 和 `通用时序` 共用大部分分析与图表能力。
-- 统一图表出口：所有 Plotly 图表通过 `render_plotly_chart()` 显示并导出 HTML。
-- 配置可持久化：字段映射、阈值、指标方向、上下限区间、分析参数和部分 UI 状态可导入导出。
+核心包：
+
+- `perf_analyzer/constants.py`：模式、字段映射、标准指标、图表主题常量。
+- `perf_analyzer/models.py`：`Metric` 指标模型。
+- `perf_analyzer/data_loader.py`：Streamlit 缓存的数据加载包装。
+- `perf_analyzer/io.py`：Excel 读取、字段识别、时间戳解析、通用时序归一化。
+- `perf_analyzer/metrics.py`：指标发现和指标查找。
+- `perf_analyzer/config.py`：配置导入、校验、阈值、UI 默认值、配置导出 JSON。
+- `perf_analyzer/analysis.py`：汇总、趋势、泄漏、效率、风险、容量、版本退化、配置建议等计算。
+- `perf_analyzer/alerts.py`：阈值判断、异常段、异常格式化。
+- `perf_analyzer/quality.py`：时间、指标、采样间隔质量摘要。
+- `perf_analyzer/report.py`：Markdown/HTML 报告内容生成。
+- `perf_analyzer/charts.py`：Plotly 导出主题和 HTML 转换。
+- `perf_analyzer/export.py`：ZIP 批量导出的核心实现。
+- `perf_analyzer/export_adapter.py`：把各视图的图表 builder 注入 `export.py`。
+- `perf_analyzer/ui_helpers.py`：Streamlit 通用 UI helper、图表统一渲染出口、配置文件读取。
+- `perf_analyzer/ui_state.py`：当前 UI 控件状态快照，用于导出配置。
+- `perf_analyzer/views_*.py`：各分析页面和图表 builder。
+
+## 顶层架构
+
+```mermaid
+flowchart TD
+    App["app.py main()"] --> UI["Streamlit UI 输入"]
+    App --> Loader["data_loader.py"]
+    App --> Config["config.py"]
+    App --> Metrics["metrics.py"]
+    App --> Views["views_*.py"]
+    App --> ExportAdapter["export_adapter.py"]
+
+    Loader --> IO["io.py"]
+    IO --> Time["time_utils.py"]
+    IO --> Utils["utils.py"]
+    IO --> Constants["constants.py"]
+
+    Metrics --> Constants
+    Metrics --> Models["models.py"]
+
+    Views --> Analysis["analysis.py"]
+    Views --> Alerts["alerts.py"]
+    Views --> Quality["quality.py"]
+    Views --> Report["report.py"]
+    Views --> UIHelpers["ui_helpers.py"]
+
+    UIHelpers --> Charts["charts.py"]
+    ExportAdapter --> Export["export.py"]
+    Export --> Charts
+    Export --> Analysis
+    Export --> Alerts
+```
 
 ## 应用主流程
 
 ```mermaid
 flowchart TD
-    Start["启动 Streamlit"] --> Main["main()"]
+    Start["streamlit run app.py"] --> Main["main()"]
 
-    Main --> Sidebar["侧边栏输入"]
-    Sidebar --> Upload["上传 Excel 文件"]
-    Sidebar --> ConfigUpload["导入分析配置 JSON"]
-    Sidebar --> Mode["选择分析模式"]
+    Main --> Sidebar["侧边栏：上传/配置/模式"]
+    Sidebar --> ParseConfig["parse_json_config()"]
+    Sidebar --> FieldAliases["字段映射 MAPPING_FIELDS"]
+    Sidebar --> AnalysisOptions["泄漏阈值 / 稳定区间"]
 
-    ConfigUpload --> ParseConfig["parse_json_config()"]
-    ParseConfig --> ConfigHelpers["config_* / metric_* 配置读取"]
+    FieldAliases --> Load["load_workbooks()"]
+    Load --> IO["read_single_workbook()"]
+    IO --> RawData["raw_data"]
+    RawData --> Stable["apply_stable_window()"]
+    Stable --> Data["data"]
 
-    Upload --> FieldAliases["字段别名合并"]
-    ConfigHelpers --> FieldAliases
-    FieldAliases --> LoadWorkbooks["load_workbooks()"]
-    LoadWorkbooks --> LoadSingle["load_single_workbook()"]
-    LoadSingle --> NormalizedData["标准化 DataFrame"]
+    Data --> Metrics["discover_metrics()"]
+    ParseConfig --> MetricConfig["configured_metric_from_import()"]
+    MetricConfig --> Thresholds["thresholds / threshold_bounds"]
+    Metrics --> Thresholds
 
-    NormalizedData --> Metrics["build_metrics_from_data()"]
-    ConfigHelpers --> Metrics
-    Metrics --> Thresholds["阈值 / 上下限 / 告警方向"]
+    Data --> Filters["数据源 / 分组 / 趋势指标筛选"]
+    Thresholds --> ConfigExport["build_settings_config() / build_config_template()"]
+    Filters --> Filtered["filtered_data"]
 
-    NormalizedData --> Filters["数据源 / 场景 / 指标筛选"]
-    Metrics --> Filters
-    Thresholds --> AnalysisViews["分析视图渲染"]
-    Filters --> AnalysisViews
-
-    AnalysisViews --> Charts["Plotly 图表"]
-    Charts --> ChartExport["render_plotly_chart()"]
-    ChartExport --> Theme["apply_chart_export_theme()"]
-    ChartExport --> HtmlExport["下载图表 HTML"]
-
-    AnalysisViews --> Report["render_report() / render_generic_report()"]
-    Report --> Markdown["build_report_markdown()"]
-    Report --> ReportHtml["build_report_html()"]
+    Filtered --> BatchExport["build_batch_export_zip()"]
+    Filtered --> Tabs["Streamlit tabs"]
+    Tabs --> Views["render_* 视图"]
 ```
 
 ## 数据处理链路
 
 ```mermaid
 flowchart LR
-    Excel["Excel 文件"] --> Workbook["load_workbooks()"]
-    Workbook --> SheetLoop["遍历 sheet"]
-    SheetLoop --> SystemInfo["系统信息 sheet"]
-    SheetLoop --> DataSheet["数据 sheet"]
+    Excel["Excel 文件或示例文件"] --> Loader["data_loader.load_workbooks()"]
+    Loader --> Single["load_single_workbook()"]
+    Single --> Read["io.read_single_workbook()"]
 
-    DataSheet --> Timestamp["匹配时间列"]
-    DataSheet --> FieldMap["字段别名匹配"]
-    FieldMap --> StandardCols["标准指标列"]
-    DataSheet --> DynamicMetrics["动态数值指标"]
+    Read --> Mode{"analysis_mode"}
+    Mode --> Performance["normalize_scene()"]
+    Mode --> Generic["normalize_generic_timeseries()"]
 
-    Timestamp --> Output["统一 DataFrame"]
-    StandardCols --> Output
-    DynamicMetrics --> Output
+    Performance --> TimeParse["parse_timestamp_series()"]
+    Generic --> TimeParse
+    TimeParse --> Frame["统一 DataFrame"]
 
-    Output --> Source["source: 文件名"]
-    Output --> Scene["scene: sheet 名称"]
-    Output --> Time["timestamp"]
-    Output --> Values["指标列"]
+    Frame --> Source["source: 文件名"]
+    Frame --> Scene["scene: sheet 名"]
+    Frame --> Timestamp["timestamp"]
+    Frame --> Metrics["标准指标 + 动态数值指标"]
 ```
 
-关键点：
+关键约定：
 
-- `source` 来自上传文件名，用于多版本或多批次对比。
-- `scene` 来自 Excel sheet 名称，用于场景、设备、工况或实验组分组。
-- 字段映射优先使用导入配置，其次使用内置别名。
-- 通用时序模式下，会尽量把非元数据的数值列识别为动态指标。
+- 第一个 sheet 是元信息，其余 sheet 是场景、设备、工况、批次或实验组。
+- `source` 来自文件名，多文件上传时用于版本或批次对比。
+- `scene` 来自 sheet 名。
+- 应用性能模式优先识别标准性能指标。
+- 通用时序模式会把非元数据的数值列作为动态指标。
+- 毫秒级时间戳在 `time_utils.parse_timestamp_series()` 中统一解析。
 
-## 配置导入导出链路
+## 配置链路
 
 ```mermaid
 flowchart TD
-    JsonFile["配置 JSON"] --> Parse["parse_json_config()"]
-    Parse --> Validate["validate_config()"]
-    Validate --> UIWarn["render_config_validation()"]
+    ConfigFile["配置 JSON"] --> Parse["ui_helpers.parse_json_config()"]
+    Parse --> Validate["views_quality.render_config_validation()"]
+    Validate --> ConfigCore["config.py"]
 
-    Parse --> Fields["config_field_aliases()"]
-    Parse --> Analysis["config_analysis_*()"]
-    Parse --> Metrics["configured_metric_from_import()"]
-    Parse --> Thresholds["threshold_from_import()"]
-    Parse --> Bounds["metric_bounds_from_import()"]
-    Parse --> UI["config_ui_*()"]
+    ConfigCore --> Fields["config_field_aliases()"]
+    ConfigCore --> AnalysisCfg["config_analysis_*()"]
+    ConfigCore --> MetricCfg["metric_config_entry()"]
+    ConfigCore --> Thresholds["threshold_from_import()"]
+    ConfigCore --> Bounds["metric_bounds_from_import()"]
+    ConfigCore --> UIConfig["config_ui_*()"]
 
-    Fields --> Load["load_workbooks()"]
-    Analysis --> Main["main()"]
-    Metrics --> MetricList["指标定义"]
-    Thresholds --> AlertRules["告警规则"]
-    Bounds --> BandRules["上下限区间带"]
-    UI --> RenderOptions["图表控件默认值"]
+    Fields --> Loader["data_loader"]
+    MetricCfg --> Metrics["Metric 列表"]
+    Thresholds --> Alerts["告警规则"]
+    Bounds --> TrendBand["趋势上下限区间带"]
+    UIConfig --> ViewDefaults["各视图控件默认值"]
 
-    RenderOptions --> BuildConfig["build_settings_config()"]
-    AlertRules --> BuildConfig
-    BandRules --> BuildConfig
-    MetricList --> BuildConfig
-    Fields --> BuildConfig
-    BuildConfig --> ConfigBytes["config_to_json_bytes()"]
-    ConfigBytes --> Download["下载当前配置 JSON"]
+    ViewDefaults --> UIState["ui_state.build_ui_settings()"]
+    UIState --> BuildSettings["build_settings_config()"]
+    Metrics --> BuildSettings
+    Alerts --> BuildSettings
+    Bounds --> BuildSettings
+    BuildSettings --> Download["导出当前分析配置"]
 ```
 
-配置主要覆盖范围：
+配置覆盖范围：
 
 - `fields`：字段别名映射。
-- `analysis`：分析模式、分组名称、内存泄漏斜率阈值、预热过滤时间。
-- `metrics`：指标展示名、单位、阈值、方向、上下限。
-- `ui`：趋势、告警、版本对比、容量、分布、采样间隔等图表控件状态。
+- `analysis`：分析模式、分组名称、内存泄漏斜率阈值、稳定区间。
+- `metrics`：指标名称、单位、阈值、告警方向、上下限。
+- `ui`：趋势、异常、版本对比、容量、分布、采样间隔、决策等控件状态。
+
+## 视图模块
+
+| 模块 | 主要函数 | 职责 |
+|---|---|---|
+| `views_overview.py` | `render_overview()` | 场景数、样本数、峰值、告警点、摘要表、告警持续性摘要 |
+| `views_trend.py` | `render_trend()` / `build_trend_figure()` | 时间趋势、阈值线、滚动均值、上下限区间带 |
+| `views_distribution.py` | `render_comparison()` / `render_distribution()` | 场景对比、箱线图、相关性热力图、控制图 |
+| `views_alerts.py` | `render_alerts()` / `build_alerts_table()` | 异常点、异常时间轴、异常段、异常段多指标联动 |
+| `views_sampling.py` | `render_sampling_interval()` | 采样间隔表、采样间隔箱线图、采样间隔时间线 |
+| `views_baseline.py` | `render_baseline_growth()` / `render_leak_detection()` / `render_version_compare()` | 基准增长、泄漏趋势、多文件版本对比 |
+| `views_decision.py` | `render_efficiency()` / `render_decision()` | 资源效率、吞吐散点、风险矩阵、风险雷达图、发布门禁、容量估算 |
+| `views_quality.py` | `render_timestamp_diagnostics()` / `render_data_quality()` | 时间字段诊断、时间质量、指标质量、采样突变、非数值列 |
+| `views_report.py` | `render_configuration_recommendation()` / `render_report()` / `render_generic_report()` | 配置建议、应用性能报告、通用时序报告 |
 
 ## 图表渲染链路
 
 ```mermaid
 flowchart TD
-    Views["各 render_* 分析视图"] --> Plotly["构造 Plotly Figure"]
-
-    Plotly --> Trend["render_trend()"]
-    Plotly --> Comparison["render_comparison()"]
-    Plotly --> Distribution["render_distribution()"]
-    Plotly --> Decision["render_decision()"]
-    Plotly --> Efficiency["render_efficiency()"]
-    Plotly --> Alerts["render_alerts()"]
-    Plotly --> Sampling["render_sampling_interval()"]
-    Plotly --> Baseline["render_baseline_growth()"]
-    Plotly --> Leak["render_leak_detection()"]
-    Plotly --> Version["render_version_compare()"]
-
-    Trend --> Export["render_plotly_chart()"]
-    Comparison --> Export
-    Distribution --> Export
-    Decision --> Export
-    Efficiency --> Export
-    Alerts --> Export
-    Sampling --> Export
-    Baseline --> Export
-    Leak --> Export
-    Version --> Export
-
-    Export --> Theme["apply_chart_export_theme()"]
-    Theme --> StreamlitChart["st.plotly_chart()"]
-    Theme --> ToHtml["fig.to_html()"]
-    ToHtml --> Download["下载图表 HTML"]
+    View["views_*.py render_*"] --> Figure["Plotly Figure"]
+    Figure --> UIHelper["ui_helpers.render_plotly_chart()"]
+    UIHelper --> Theme["charts.apply_chart_export_theme()"]
+    Theme --> Streamlit["st.plotly_chart(theme=None)"]
+    Theme --> HTML["charts.figure_to_html_bytes()"]
+    HTML --> Download["下载图表 HTML"]
 ```
 
-图表出口统一在 `render_plotly_chart()`，因此图表主题、导出 HTML、下载按钮等共性问题应优先在这里处理。
+约定：
 
-## 主要分析视图
+- 页面展示和 HTML 导出统一走 `render_plotly_chart()`。
+- 图表色板和主题在 `charts.apply_chart_export_theme()` 中补齐。
+- 导出 HTML 使用 Figure 自身样式，不依赖 Streamlit 前端主题。
 
-| 函数 | 位置 | 作用 |
-|---|---:|---|
-| `render_system_info()` | `app.py:2073` | 展示系统信息 sheet |
-| `render_overview()` | `app.py:2081` | 汇总场景数、样本数、峰值、告警点和摘要表 |
-| `render_trend()` | `app.py:2130` | 时间趋势、滚动均值、阈值线、上下限区间带 |
-| `render_comparison()` | `app.py:2243` | 场景间统计口径对比 |
-| `render_distribution()` | `app.py:2292` | 箱线图和指标相关性热力图 |
-| `render_efficiency()` | `app.py:2416` | 资源效率和吞吐资源散点 |
-| `render_decision()` | `app.py:2494` | 风险矩阵、风险雷达图和结论辅助 |
-| `render_alerts()` | `app.py:2688` | 异常时间轴、异常段持续时长和多指标联动 |
-| `render_sampling_interval()` | `app.py:2908` | 采样间隔分布和时间线 |
-| `render_baseline_growth()` | `app.py:2986` | 基准场景相对增长率 |
-| `render_leak_detection()` | `app.py:3075` | 内存线性增长斜率判断 |
-| `render_version_compare()` | `app.py:3105` | 多数据源版本对比和退化热力图 |
-| `render_configuration_recommendation()` | `app.py:3225` | CPU、内存、磁盘等配置建议 |
-| `render_report()` | `app.py:3318` | 应用性能模式报告导出 |
-| `render_generic_report()` | `app.py:3349` | 通用时序模式报告导出 |
-
-## HTML 图表导出细节
+## 批量导出链路
 
 ```mermaid
-sequenceDiagram
-    participant View as render_* 视图
-    participant Plotly as Plotly Figure
-    participant Export as render_plotly_chart()
-    participant Theme as apply_chart_export_theme()
-    participant Streamlit as st.plotly_chart()
-    participant Html as fig.to_html()
+flowchart TD
+    Main["app.py main()"] --> Adapter["export_adapter.build_batch_export_zip()"]
+    Adapter --> Core["export.build_batch_export_zip()"]
 
-    View->>Plotly: 创建 Figure 和 trace
-    View->>Export: render_plotly_chart(fig, filename)
-    Export->>Theme: 应用统一模板、坐标轴、色板
-    Theme->>Plotly: 补齐自动/占位颜色
-    Export->>Streamlit: 页面显示
-    Export->>Html: 生成独立 HTML
-    Html-->>View: 下载按钮提供文件
+    Adapter --> AlertBuilder["views_alerts.build_alerts_table()"]
+    Adapter --> TrendBuilder["views_trend.build_trend_figure()"]
+    Adapter --> DistBuilder["views_distribution.build_distribution_figure()"]
+    Adapter --> SamplingBuilder["views_sampling.* builder"]
+    Adapter --> AlertTimeline["views_alerts.build_alert_timeline_figure()"]
+
+    Core --> Summary["analysis.summarize()"]
+    Core --> Segments["alerts.alert_segments()"]
+    Core --> HTML["charts.figure_to_html_bytes()"]
+    Core --> ZIP["图表与表格 ZIP"]
 ```
 
-注意：
+设计意图：
 
-- App 内显示可能受到 Streamlit 前端主题影响。
-- 独立 HTML 只能使用 Plotly Figure 自身携带的样式。
-- 因此颜色、模板、坐标轴样式必须在 `fig.to_html()` 前写入 Figure。
+- `export.py` 只关心 ZIP 结构和导出流程。
+- `export_adapter.py` 负责把视图层的 Figure builder 注入导出核心。
+- 这样可以避免 `app.py` 直接依赖所有图表 builder。
 
 ## 报告导出链路
 
 ```mermaid
 flowchart TD
-    Data["分析后的 DataFrame"] --> Conclusions["build_conclusions()"]
-    Data --> Markdown["build_report_markdown()"]
-    Markdown --> Html["build_report_html()"]
-
-    Conclusions --> RenderReport["render_report()"]
-    Markdown --> RenderReport
-    Html --> RenderReport
-
-    RenderReport --> MdDownload["下载 Markdown 报告"]
-    RenderReport --> HtmlDownload["下载 HTML 报告"]
-
-    Data --> GenericReport["render_generic_report()"]
-    GenericReport --> GenericMarkdown["通用时序 Markdown 报告"]
+    Data["filtered_data"] --> ReportView["views_report.py"]
+    ReportView --> Conclusions["report.build_conclusions()"]
+    ReportView --> Markdown["report.build_report_markdown()"]
+    ReportView --> GenericMarkdown["report.build_generic_report_markdown()"]
+    Markdown --> Html["report.build_report_html()"]
+    GenericMarkdown --> Html
+    Html --> DownloadHtml["下载 HTML 报告"]
+    Markdown --> DownloadMarkdown["下载 Markdown 报告"]
 ```
 
-报告导出和图表 HTML 导出是两条链路：
+报告导出和图表导出是两条链路：
 
 - 报告 HTML：由 Markdown 文本转换，偏结论和表格。
 - 图表 HTML：由 Plotly Figure 导出，保留交互能力。
 
-## 示例数据生成
+## 质量诊断链路
+
+```mermaid
+flowchart TD
+    Files["Excel 文件"] --> TimestampDiag["data_loader.load_timestamp_diagnostics()"]
+    Files --> NonNumeric["data_loader.load_non_numeric_column_summary()"]
+    Data["raw_data / filtered_data"] --> TimeQuality["quality.timestamp_quality_summary()"]
+    Data --> MetricQuality["quality.metric_quality_summary()"]
+    Data --> Sampling["views_sampling.build_sampling_interval_tables()"]
+    Sampling --> GapQuality["quality.sampling_gap_issue_summary()"]
+
+    TimestampDiag --> QualityView["views_quality.py"]
+    NonNumeric --> QualityView
+    TimeQuality --> QualityView
+    MetricQuality --> QualityView
+    GapQuality --> QualityView
+```
+
+## 主要计算模块
+
+| 模块 | 代表函数 | 说明 |
+|---|---|---|
+| `analysis.py` | `summarize()` | 按数据源和场景汇总各指标统计、超阈、趋势 |
+| `analysis.py` | `apply_stable_window()` | 按数据源和场景排除前 N 分钟预热数据 |
+| `analysis.py` | `leak_analysis()` / `trend_analysis()` | 线性趋势和疑似泄漏筛查 |
+| `analysis.py` | `resource_efficiency_analysis()` | 资源消耗归一化到吞吐或并发 |
+| `analysis.py` | `scene_decision_analysis()` / `release_gate_analysis()` | 风险评级和发布门禁 |
+| `analysis.py` | `capacity_estimation()` / `configuration_recommendation()` | 容量曲线和配置建议 |
+| `alerts.py` | `metric_alert_mask()` / `alert_segments()` | 指标异常点和连续异常段 |
+| `quality.py` | `timestamp_quality_summary()` / `metric_quality_summary()` | 时间与指标质量诊断 |
+| `metrics.py` | `discover_metrics()` / `metric_by_key()` | 标准指标和动态指标发现 |
+
+## 示例数据
 
 ```mermaid
 flowchart LR
-    Main["generate_sample_data.py main()"] --> Scenarios["make_scenario()"]
-    Scenarios --> Metrics["生成 CPU / 内存 / IO / QPS / FPS 等指标"]
-    Metrics --> Excel["data/sample_resource_consumption.xlsx"]
+    Generator["generate_sample_data.py"] --> PerfExcel["data/sample_resource_consumption.xlsx"]
+    GenericExcel["data/generic_timeseries_samples/generic_sensor_measurements.xlsx"] --> GenericMode["通用时序模式验证"]
 ```
-
-`generate_sample_data.py` 主要用于应用性能模式验证。通用时序模式的样例数据位于 `data/generic_timeseries_samples/`，由仓库中现有样例文件提供。
 
 ## 维护建议
 
-- 新增图表时，优先新增 `render_*()` 函数，并通过 `render_plotly_chart()` 统一显示和导出。
-- 新增配置项时，同步考虑 `parse_json_config()`、`validate_config()`、`config_ui_*()`、`build_settings_config()` 和示例 JSON。
-- 新增指标识别规则时，优先扩展字段别名和 `Metric` 定义，避免在渲染函数里硬编码列名。
-- 如果拆分模块，建议按 `io/config/metrics/analysis/charts/report` 六个方向切分，降低 `app.py` 的单文件复杂度。
+- 新增页面：优先在 `perf_analyzer/views_*.py` 中新增 `render_*()`，由 `app.py main()` 编排到 tab。
+- 新增图表：统一通过 `ui_helpers.render_plotly_chart()` 展示和导出。
+- 新增可批量导出的图表：在对应 `views_*.py` 提供 Figure builder，再通过 `export_adapter.py` 注入 `export.py`。
+- 新增指标：优先扩展 `constants.py` 的标准指标和字段别名，动态指标规则放在 `metrics.py` / `utils.py`。
+- 新增配置项：同步更新 `config.py`、`ui_state.py`、示例 JSON 和 README。
+- 调整数据读取：优先修改 `io.py` 和 `time_utils.py`，不要在视图层解析原始 Excel。
+- 调整分析口径：优先放入 `analysis.py`、`alerts.py` 或 `quality.py`，视图层只负责控件、展示和下载。
