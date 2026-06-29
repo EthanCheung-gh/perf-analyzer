@@ -35,7 +35,7 @@ from perf_analyzer.constants import (
     PERFORMANCE_MODE,
     SAMPLE_FILE,
 )
-from perf_analyzer.export import build_batch_export_zip as build_batch_export_zip_core
+from perf_analyzer.export_adapter import build_batch_export_zip
 from perf_analyzer.io import non_numeric_column_summary, read_single_workbook, timestamp_diagnostics
 from perf_analyzer.metrics import discover_metrics, metric_by_key
 from perf_analyzer.models import Metric
@@ -47,20 +47,17 @@ from perf_analyzer.ui_helpers import (
 from perf_analyzer.utils import (
     parse_aliases,
 )
-from perf_analyzer.views_alerts import build_alert_timeline_figure, build_alerts_table, render_alerts
+from perf_analyzer.views_alerts import render_alerts
 from perf_analyzer.views_baseline import render_baseline_growth, render_leak_detection, render_version_compare
 from perf_analyzer.views_decision import render_decision, render_efficiency
-from perf_analyzer.views_distribution import build_distribution_figure, render_comparison, render_distribution
+from perf_analyzer.views_distribution import render_comparison, render_distribution
 from perf_analyzer.views_overview import render_overview
 from perf_analyzer.views_quality import render_config_validation, render_data_quality, render_timestamp_diagnostics
 from perf_analyzer.views_report import render_configuration_recommendation, render_generic_report, render_report
 from perf_analyzer.views_sampling import (
-    build_sampling_interval_box,
-    build_sampling_interval_line,
-    build_sampling_interval_tables,
     render_sampling_interval,
 )
-from perf_analyzer.views_trend import build_trend_figure, render_trend
+from perf_analyzer.views_trend import render_trend
 
 
 @st.cache_data(show_spinner=False)
@@ -194,39 +191,6 @@ def build_ui_settings() -> dict:
             "selected_trend_metrics": session_value("selected_trend_metrics", []),
         },
     }
-
-
-def build_batch_export_zip(
-    data: pd.DataFrame,
-    selected_scenes: list[str],
-    selected_metrics: list[str],
-    thresholds: dict[str, float],
-    threshold_bounds: dict[str, tuple[float | None, float | None]],
-    metrics: list[Metric],
-    analysis_mode: str,
-    group_label: str,
-    export_mode: str = "轻量模式",
-    export_options: dict[str, object] | None = None,
-) -> bytes:
-    return build_batch_export_zip_core(
-        data,
-        selected_scenes,
-        selected_metrics,
-        thresholds,
-        threshold_bounds,
-        metrics,
-        analysis_mode,
-        group_label,
-        build_alerts_table=build_alerts_table,
-        build_sampling_interval_tables=build_sampling_interval_tables,
-        build_trend_figure=build_trend_figure,
-        build_distribution_figure=build_distribution_figure,
-        build_alert_timeline_figure=build_alert_timeline_figure,
-        build_sampling_interval_box=build_sampling_interval_box,
-        build_sampling_interval_line=build_sampling_interval_line,
-        export_mode=export_mode,
-        export_options=export_options,
-    )
 
 
 def ensure_sample_file(path: Path) -> None:
