@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import html
+import io
+import zipfile
+from datetime import datetime
+
 import pandas as pd
 
 from .alerts import alert_segments, format_value, metric_alert_mask
@@ -15,6 +20,14 @@ from .analysis import (
     trend_analysis,
 )
 from .models import Metric
+
+
+def _format_report_value(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
 
 
 def _count_alerts(
@@ -115,14 +128,65 @@ def dataframe_to_markdown(df: pd.DataFrame) -> str:
         return ""
     display = df.copy()
     for column in display.columns:
-        if pd.api.types.is_float_dtype(display[column]):
-            display[column] = display[column].map(lambda value: "" if pd.isna(value) else f"{value:.2f}")
-        else:
-            display[column] = display[column].map(lambda value: "" if pd.isna(value) else str(value))
+        display[column] = display[column].map(_format_report_value)
     header = "| " + " | ".join(display.columns) + " |"
     separator = "| " + " | ".join("---" for _ in display.columns) + " |"
     rows = ["| " + " | ".join(row) + " |" for row in display.astype(str).to_numpy()]
     return "\n".join([header, separator, *rows])
+
+
+def _markdown_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = _markdown_table_row(line)
+    return bool(cells) and all(cell.replace("-", "").replace(":", "").strip() == "" and "-" in cell for cell in cells)
+
+
+def _markdown_blocks(markdown_text: str) -> list[dict[str, object]]:
+    lines = markdown_text.splitlines()
+    blocks: list[dict[str, object]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if not line.strip():
+            index += 1
+            continue
+        if line.startswith("# "):
+            blocks.append({"type": "heading", "level": 1, "text": line[2:].strip()})
+            index += 1
+            continue
+        if line.startswith("## "):
+            blocks.append({"type": "heading", "level": 2, "text": line[3:].strip()})
+            index += 1
+            continue
+        if line.startswith("- "):
+            items = []
+            while index < len(lines) and lines[index].startswith("- "):
+                items.append(lines[index][2:].strip())
+                index += 1
+            blocks.append({"type": "list", "items": items})
+            continue
+        if line.startswith("|") and index + 1 < len(lines) and _is_markdown_table_separator(lines[index + 1]):
+            headers = _markdown_table_row(line)
+            rows = []
+            index += 2
+            while index < len(lines) and lines[index].startswith("|"):
+                rows.append(_markdown_table_row(lines[index]))
+                index += 1
+            blocks.append({"type": "table", "headers": headers, "rows": rows})
+            continue
+        paragraphs = [line.strip()]
+        index += 1
+        while index < len(lines):
+            next_line = lines[index].rstrip()
+            if not next_line.strip() or next_line.startswith("# ") or next_line.startswith("## ") or next_line.startswith("- ") or next_line.startswith("|"):
+                break
+            paragraphs.append(next_line.strip())
+            index += 1
+        blocks.append({"type": "paragraph", "text": " ".join(paragraphs)})
+    return blocks
 
 
 def build_report_markdown(
@@ -269,26 +333,119 @@ def build_generic_report_markdown(
     return "\n".join(lines)
 
 
-def build_report_html(markdown_text: str) -> str:
-    body = markdown_text
-    replacements = {
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-    }
-    for old, new in replacements.items():
-        body = body.replace(old, new)
-    body = body.replace("\n", "<br>\n")
+def build_report_html(markdown_text: str, title: str | None = None) -> str:
+    blocks = _markdown_blocks(markdown_text)
+    report_title = title or next((str(block["text"]) for block in blocks if block["type"] == "heading" and block["level"] == 1), "分析报告")
+    body_parts = [
+        '<header class="report-header">',
+        f"<h1>{html.escape(report_title)}</h1>",
+        f'<p class="meta">导出时间：{html.escape(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))}</p>',
+        "</header>",
+    ]
+    skip_first_h1 = True
+    for block in blocks:
+        block_type = block["type"]
+        if block_type == "heading":
+            level = int(block["level"])
+            text = html.escape(str(block["text"]))
+            if level == 1 and skip_first_h1:
+                skip_first_h1 = False
+                continue
+            body_parts.append(f"<h{level}>{text}</h{level}>")
+        elif block_type == "list":
+            body_parts.append("<ul>")
+            for item in block["items"]:
+                body_parts.append(f"<li>{html.escape(str(item))}</li>")
+            body_parts.append("</ul>")
+        elif block_type == "table":
+            headers = [html.escape(str(header)) for header in block["headers"]]
+            rows = block["rows"]
+            body_parts.append("<div class=\"table-wrap\"><table>")
+            body_parts.append("<thead><tr>" + "".join(f"<th>{header}</th>" for header in headers) + "</tr></thead>")
+            body_parts.append("<tbody>")
+            for row in rows:
+                cells = [html.escape(str(cell)) for cell in row]
+                body_parts.append("<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>")
+            body_parts.append("</tbody></table></div>")
+        else:
+            text = html.escape(str(block["text"]))
+            body_parts.append(f"<p>{text}</p>")
+    body = "\n".join(body_parts)
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>应用资源消耗分析报告</title>
+  <title>{html.escape(report_title)}</title>
   <style>
-    body {{ font-family: Arial, "Microsoft YaHei", sans-serif; line-height: 1.6; margin: 40px; color: #222; }}
-    code {{ background: #f3f4f6; padding: 2px 4px; }}
+    :root {{ color-scheme: light; }}
+    body {{ font-family: Arial, "Microsoft YaHei", sans-serif; line-height: 1.62; margin: 0; color: #1f2933; background: #f5f7fa; }}
+    .report {{ max-width: 1120px; margin: 0 auto; padding: 32px 36px 48px; background: #fff; min-height: 100vh; }}
+    .report-header {{ border-bottom: 2px solid #d8dee9; margin-bottom: 28px; padding-bottom: 18px; }}
+    h1 {{ margin: 0 0 10px; font-size: 30px; color: #111827; }}
+    h2 {{ margin-top: 30px; border-left: 4px solid #2563eb; padding-left: 10px; font-size: 21px; color: #111827; }}
+    p {{ margin: 10px 0; }}
+    ul {{ margin: 10px 0 16px 22px; padding: 0; }}
+    li {{ margin: 5px 0; }}
+    .meta {{ color: #667085; font-size: 13px; }}
+    .table-wrap {{ overflow-x: auto; margin: 12px 0 22px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    th, td {{ border: 1px solid #d0d7de; padding: 7px 8px; text-align: left; vertical-align: top; }}
+    th {{ background: #eef2f7; color: #111827; font-weight: 700; }}
+    tr:nth-child(even) td {{ background: #fafbfc; }}
+    code {{ background: #f3f4f6; padding: 2px 4px; border-radius: 3px; }}
+    @media print {{
+      body {{ background: #fff; }}
+      .report {{ padding: 0; max-width: none; }}
+      .table-wrap {{ overflow: visible; }}
+      h2 {{ break-after: avoid; }}
+      table {{ break-inside: auto; }}
+      tr {{ break-inside: avoid; break-after: auto; }}
+    }}
   </style>
 </head>
-<body>{body}</body>
+<body><main class="report">{body}</main></body>
 </html>
 """
+
+
+def build_report_docx_bytes(markdown_text: str) -> bytes:
+    try:
+        from docx import Document
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("未安装 python-docx，无法生成 Word 报告。请先执行 pip install python-docx。") from exc
+
+    document = Document()
+    for block in _markdown_blocks(markdown_text):
+        block_type = block["type"]
+        if block_type == "heading":
+            document.add_heading(str(block["text"]), level=int(block["level"]))
+        elif block_type == "list":
+            for item in block["items"]:
+                document.add_paragraph(str(item), style="List Bullet")
+        elif block_type == "table":
+            headers = [str(header) for header in block["headers"]]
+            rows = [[str(cell) for cell in row] for row in block["rows"]]
+            table = document.add_table(rows=1, cols=len(headers))
+            table.style = "Table Grid"
+            for index, header in enumerate(headers):
+                table.rows[0].cells[index].text = header
+            for row in rows:
+                cells = table.add_row().cells
+                for index, cell in enumerate(row[: len(headers)]):
+                    cells[index].text = cell
+        else:
+            document.add_paragraph(str(block["text"]))
+
+    output = io.BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def build_report_zip_bytes(markdown_report: str, html_report: str, docx_report: bytes | None = None, base_name: str = "analysis_report") -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{base_name}.md", markdown_report.encode("utf-8-sig"))
+        archive.writestr(f"{base_name}.html", html_report.encode("utf-8-sig"))
+        if docx_report is not None:
+            archive.writestr(f"{base_name}.docx", docx_report)
+    return output.getvalue()

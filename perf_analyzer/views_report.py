@@ -10,8 +10,10 @@ from .report import (
     build_conclusions,
     build_generic_conclusions,
     build_generic_report_markdown,
+    build_report_docx_bytes,
     build_report_html,
     build_report_markdown,
+    build_report_zip_bytes,
 )
 
 
@@ -123,7 +125,14 @@ def render_report(
         st.write(f"- {item}")
 
     markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
-    html_report = build_report_html(markdown_report)
+    html_report = build_report_html(markdown_report, "应用资源消耗分析报告")
+    docx_report = None
+    docx_error = ""
+    try:
+        docx_report = build_report_docx_bytes(markdown_report)
+    except RuntimeError as exc:
+        docx_error = str(exc)
+    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, "resource_report")
     st.download_button(
         "下载 Markdown 报告",
         markdown_report.encode("utf-8-sig"),
@@ -136,7 +145,23 @@ def render_report(
         file_name="resource_report.html",
         mime="text/html",
     )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
+    if docx_report is not None:
+        st.download_button(
+            "下载 Word 报告",
+            docx_report,
+            file_name="resource_report.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    else:
+        st.warning(docx_error)
+    st.download_button(
+        "下载报告 ZIP",
+        zip_report,
+        file_name="resource_report.zip",
+        mime="application/zip",
+        help="打包 Markdown、HTML 和可用时的 Word 报告。",
+    )
+    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。HTML 已包含打印样式。")
 
 
 def render_generic_report(
@@ -152,7 +177,14 @@ def render_generic_report(
         st.write(f"- {item}")
 
     markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds)
-    html_report = build_report_html(markdown_report)
+    html_report = build_report_html(markdown_report, "通用时序分析报告")
+    docx_report = None
+    docx_error = ""
+    try:
+        docx_report = build_report_docx_bytes(markdown_report)
+    except RuntimeError as exc:
+        docx_error = str(exc)
+    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, "timeseries_report")
     st.download_button(
         "下载 Markdown 报告",
         markdown_report.encode("utf-8-sig"),
@@ -165,4 +197,20 @@ def render_generic_report(
         file_name="timeseries_report.html",
         mime="text/html",
     )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。")
+    if docx_report is not None:
+        st.download_button(
+            "下载 Word 报告",
+            docx_report,
+            file_name="timeseries_report.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+    else:
+        st.warning(docx_error)
+    st.download_button(
+        "下载报告 ZIP",
+        zip_report,
+        file_name="timeseries_report.zip",
+        mime="application/zip",
+        help="打包 Markdown、HTML 和可用时的 Word 报告。",
+    )
+    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。HTML 已包含打印样式。")
