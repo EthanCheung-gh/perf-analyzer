@@ -141,7 +141,7 @@ def render_report(
     )
     st.download_button(
         "下载 HTML 报告",
-        html_report.encode("utf-8-sig"),
+        html_report.encode("utf-8"),
         file_name="resource_report.html",
         mime="text/html",
     )
@@ -193,7 +193,7 @@ def render_generic_report(
     )
     st.download_button(
         "下载 HTML 报告",
-        html_report.encode("utf-8-sig"),
+        html_report.encode("utf-8"),
         file_name="timeseries_report.html",
         mime="text/html",
     )

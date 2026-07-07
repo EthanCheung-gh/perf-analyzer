@@ -375,6 +375,7 @@ def build_report_html(markdown_text: str, title: str | None = None) -> str:
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{html.escape(report_title)}</title>
   <style>
     :root {{ color-scheme: light; }}
@@ -445,7 +446,7 @@ def build_report_zip_bytes(markdown_report: str, html_report: str, docx_report: 
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(f"{base_name}.md", markdown_report.encode("utf-8-sig"))
-        archive.writestr(f"{base_name}.html", html_report.encode("utf-8-sig"))
+        archive.writestr(f"{base_name}.html", html_report.encode("utf-8"))
         if docx_report is not None:
             archive.writestr(f"{base_name}.docx", docx_report)
     return output.getvalue()
