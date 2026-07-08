@@ -227,13 +227,30 @@ flowchart TD
     ReportView --> GenericMarkdown["report.build_generic_report_markdown()"]
     Markdown --> Html["report.build_report_html()"]
     GenericMarkdown --> Html
+    Markdown --> Docx["report.build_report_docx_bytes()"]
+    GenericMarkdown --> Docx
+    Markdown --> Pdf["report.build_report_pdf_bytes()"]
+    GenericMarkdown --> Pdf
+    ReportView --> PdfImages["report.build_report_figure_images()"]
+    PdfImages --> Pdf
+    ReportView --> Details["report.build_report_details_xlsx_bytes()"]
+    Markdown --> Zip["report.build_report_zip_bytes()"]
+    Html --> Zip
+    Docx --> Zip
+    Pdf --> Zip
+    Details --> Zip
     Html --> DownloadHtml["下载 HTML 报告"]
     Markdown --> DownloadMarkdown["下载 Markdown 报告"]
+    Docx --> DownloadDocx["下载 Word 报告"]
+    Pdf --> DownloadPdf["下载 PDF 报告"]
+    Zip --> DownloadZip["下载报告 ZIP"]
 ```
 
 报告导出和图表导出是两条链路：
 
 - 报告 HTML：由 Markdown 文本转换，偏结论和表格。
+- 报告 PDF：由 PDF 专用摘要 Markdown 和 Matplotlib 静态 PNG 图转换，只保留结论、Top 风险、关键表格和关键图表。
+- 明细 Excel：ZIP 内包含完整分析表，适合筛选、排序和复核。
 - 图表 HTML：由 Plotly Figure 导出，保留交互能力。
 
 ## 质量诊断链路

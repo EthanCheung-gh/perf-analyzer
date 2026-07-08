@@ -9,10 +9,18 @@ from .models import Metric
 from .report import (
     build_conclusions,
     build_generic_conclusions,
+    build_generic_report_detail_tables,
+    build_generic_report_figure_images,
     build_generic_report_markdown,
+    build_generic_report_pdf_summary_markdown,
+    build_report_detail_tables,
+    build_report_details_xlsx_bytes,
     build_report_docx_bytes,
+    build_report_figure_images,
     build_report_html,
     build_report_markdown,
+    build_report_pdf_bytes,
+    build_report_pdf_summary_markdown,
     build_report_zip_bytes,
 )
 
@@ -126,13 +134,23 @@ def render_report(
 
     markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
     html_report = build_report_html(markdown_report, "应用资源消耗分析报告")
+    pdf_markdown_report = build_report_pdf_summary_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
+    detail_tables = build_report_detail_tables(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table)
+    details_xlsx = build_report_details_xlsx_bytes(detail_tables)
+    pdf_images, image_errors = build_report_figure_images(data, thresholds, slope_threshold, metrics, threshold_bounds)
     docx_report = None
     docx_error = ""
     try:
         docx_report = build_report_docx_bytes(markdown_report)
     except RuntimeError as exc:
         docx_error = str(exc)
-    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, "resource_report")
+    pdf_report = None
+    pdf_error = ""
+    try:
+        pdf_report = build_report_pdf_bytes(pdf_markdown_report, "应用资源消耗分析报告", pdf_images)
+    except RuntimeError as exc:
+        pdf_error = str(exc)
+    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, pdf_report, details_xlsx, "resource_report")
     st.download_button(
         "下载 Markdown 报告",
         markdown_report.encode("utf-8-sig"),
@@ -154,14 +172,25 @@ def render_report(
         )
     else:
         st.warning(docx_error)
+    if pdf_report is not None:
+        st.download_button(
+            "下载 PDF 报告",
+            pdf_report,
+            file_name="resource_report.pdf",
+            mime="application/pdf",
+        )
+    else:
+        st.warning(pdf_error)
+    for image_error in sorted(set(image_errors)):
+        st.warning(image_error)
     st.download_button(
         "下载报告 ZIP",
         zip_report,
         file_name="resource_report.zip",
         mime="application/zip",
-        help="打包 Markdown、HTML 和可用时的 Word 报告。",
+        help="打包完整 Markdown、HTML、PDF 摘要、明细 Excel 和可用时的 Word 报告。",
     )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。HTML 已包含打印样式。")
+    st.caption("PDF 为摘要报告，适合归档和发送；完整明细见 ZIP 内 HTML、Markdown 和 Excel。")
 
 
 def render_generic_report(
@@ -178,13 +207,23 @@ def render_generic_report(
 
     markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds)
     html_report = build_report_html(markdown_report, "通用时序分析报告")
+    pdf_markdown_report = build_generic_report_pdf_summary_markdown(data, thresholds, metrics, group_label, threshold_bounds)
+    detail_tables = build_generic_report_detail_tables(data, thresholds, metrics, threshold_bounds)
+    details_xlsx = build_report_details_xlsx_bytes(detail_tables)
+    pdf_images, image_errors = build_generic_report_figure_images(data, thresholds, metrics, threshold_bounds)
     docx_report = None
     docx_error = ""
     try:
         docx_report = build_report_docx_bytes(markdown_report)
     except RuntimeError as exc:
         docx_error = str(exc)
-    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, "timeseries_report")
+    pdf_report = None
+    pdf_error = ""
+    try:
+        pdf_report = build_report_pdf_bytes(pdf_markdown_report, "通用时序分析报告", pdf_images)
+    except RuntimeError as exc:
+        pdf_error = str(exc)
+    zip_report = build_report_zip_bytes(markdown_report, html_report, docx_report, pdf_report, details_xlsx, "timeseries_report")
     st.download_button(
         "下载 Markdown 报告",
         markdown_report.encode("utf-8-sig"),
@@ -206,11 +245,22 @@ def render_generic_report(
         )
     else:
         st.warning(docx_error)
+    if pdf_report is not None:
+        st.download_button(
+            "下载 PDF 报告",
+            pdf_report,
+            file_name="timeseries_report.pdf",
+            mime="application/pdf",
+        )
+    else:
+        st.warning(pdf_error)
+    for image_error in sorted(set(image_errors)):
+        st.warning(image_error)
     st.download_button(
         "下载报告 ZIP",
         zip_report,
         file_name="timeseries_report.zip",
         mime="application/zip",
-        help="打包 Markdown、HTML 和可用时的 Word 报告。",
+        help="打包完整 Markdown、HTML、PDF 摘要、明细 Excel 和可用时的 Word 报告。",
     )
-    st.caption("需要 PDF 时，可打开 HTML 报告后使用浏览器打印为 PDF。HTML 已包含打印样式。")
+    st.caption("PDF 为摘要报告，适合归档和发送；完整明细见 ZIP 内 HTML、Markdown 和 Excel。")
