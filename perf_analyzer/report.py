@@ -8,8 +8,6 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 
 from .alerts import alert_segments, format_value, metric_alert_mask
 from .analysis import (
@@ -368,163 +366,6 @@ def _build_top_trend_image(
     return _matplotlib_png(draw)
 
 
-def _build_risk_matrix_figure(decisions: pd.DataFrame) -> go.Figure | None:
-    matrix = risk_matrix_data(decisions)
-    if matrix.empty:
-        return None
-    matrix_pivot = matrix.pivot(index="场景标识", columns="风险项", values="风险分").fillna(0)
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=matrix_pivot.values,
-            x=matrix_pivot.columns,
-            y=matrix_pivot.index,
-            zmin=0,
-            zmax=2,
-            colorscale=[[0, "#2ca02c"], [0.5, "#ffbf00"], [1, "#d62728"]],
-            colorbar=dict(title="风险分", tickvals=[0, 1, 2], ticktext=["低", "中", "高"]),
-            text=matrix_pivot.values,
-            texttemplate="%{text:.0f}",
-        )
-    )
-    fig.update_layout(title="场景风险矩阵", height=420, margin=dict(l=30, r=30, t=70, b=40))
-    return fig
-
-
-def _build_radar_figure(data: pd.DataFrame, decisions: pd.DataFrame, thresholds: dict[str, float]) -> go.Figure | None:
-    radar_data = radar_profile_data(data, decisions, thresholds)
-    if radar_data.empty:
-        return None
-    scene_options = list(radar_data["场景标识"].drop_duplicates())[:3]
-    fig = go.Figure()
-    for scene_id in scene_options:
-        scene_profile = radar_data[radar_data["场景标识"] == scene_id]
-        dimensions = list(scene_profile["维度"])
-        values = list(scene_profile["风险分"])
-        if dimensions:
-            fig.add_trace(
-                go.Scatterpolar(
-                    r=[*values, values[0]],
-                    theta=[*dimensions, dimensions[0]],
-                    fill="toself",
-                    name=scene_id,
-                )
-            )
-    if not fig.data:
-        return None
-    fig.update_layout(
-        title="场景风险画像",
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-        height=520,
-        margin=dict(l=30, r=30, t=70, b=40),
-    )
-    return fig
-
-
-def _build_alert_timeline_figure(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    metrics: list[Metric],
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-) -> go.Figure | None:
-    alert_frames = []
-    for metric in metrics:
-        if metric.key not in data:
-            continue
-        mask = metric_alert_mask(data[metric.key], metric, thresholds, threshold_bounds)
-        alert = data[mask][["timestamp", "source", "scene", metric.key]].copy()
-        if alert.empty:
-            continue
-        alert["指标"] = metric.label
-        alert["值"] = alert[metric.key]
-        alert_frames.append(alert[["timestamp", "source", "scene", "指标", "值"]])
-    if not alert_frames:
-        return None
-    alerts = pd.concat(alert_frames, ignore_index=True).sort_values("timestamp")
-    timeline = with_display_label(alerts)
-    fig = px.scatter(
-        timeline,
-        x="timestamp",
-        y="display_scene",
-        color="指标",
-        hover_data=["source", "scene", "值"],
-        labels={"timestamp": "时间", "display_scene": "场景"},
-        title="异常时间轴",
-    )
-    fig.update_traces(marker=dict(size=9))
-    fig.update_layout(height=460, margin=dict(l=30, r=30, t=70, b=40))
-    return fig
-
-
-def _build_capacity_curve_figure(data: pd.DataFrame) -> go.Figure | None:
-    capacity = capacity_estimation(data, 8, 70.0, [50, 100, 200], 2.0)
-    if capacity.empty:
-        return None
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=capacity["目标吞吐"],
-            y=capacity["建议CPU核数"],
-            mode="lines+markers",
-            name="建议CPU核数",
-            line=dict(color="#1f77b4"),
-        )
-    )
-    if "内存需求(GB)" in capacity and capacity["内存需求(GB)"].notna().any():
-        fig.add_trace(
-            go.Scatter(
-                x=capacity["目标吞吐"],
-                y=capacity["内存需求(GB)"],
-                mode="lines+markers",
-                name="内存需求(GB)",
-                yaxis="y2",
-                line=dict(color="#2ca02c"),
-            )
-        )
-    fig.update_layout(
-        title="容量曲线",
-        xaxis=dict(title="目标吞吐"),
-        yaxis=dict(title="建议CPU核数"),
-        yaxis2=dict(title="内存需求(GB)", overlaying="y", side="right"),
-        height=460,
-        margin=dict(l=30, r=30, t=70, b=40),
-    )
-    return fig
-
-
-def _build_top_trend_figure(
-    data: pd.DataFrame,
-    thresholds: dict[str, float],
-    metrics: list[Metric],
-    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-) -> go.Figure | None:
-    if data.empty:
-        return None
-    selected_metric: Metric | None = None
-    best_alerts = -1
-    for metric in metrics:
-        if metric.key not in data or data[metric.key].dropna().empty:
-            continue
-        count = int(metric_alert_mask(data[metric.key], metric, thresholds, threshold_bounds).sum())
-        if count > best_alerts:
-            best_alerts = count
-            selected_metric = metric
-    if selected_metric is None:
-        return None
-    filtered = with_display_label(data.copy())
-    fig = px.line(
-        filtered.sort_values("timestamp"),
-        x="timestamp",
-        y=selected_metric.key,
-        color="display_scene",
-        labels={"timestamp": "时间", selected_metric.key: f"{selected_metric.label}({selected_metric.unit})", "display_scene": "场景"},
-        title=f"关键指标趋势：{selected_metric.label}",
-    )
-    if selected_metric.key in thresholds:
-        fig.add_hline(y=thresholds[selected_metric.key], line_dash="dash", line_color="#d62728", annotation_text="阈值")
-    fig.update_layout(height=460, margin=dict(l=30, r=30, t=70, b=40))
-    return fig
-
-
 def build_report_figure_images(
     data: pd.DataFrame,
     thresholds: dict[str, float],
@@ -808,7 +649,7 @@ def build_report_pdf_summary_markdown(
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     config_table: pd.DataFrame | None = None,
     config_notes: list[str] | None = None,
-    top_n: int = 10,
+    top_n: int = 8,
 ) -> str:
     tables = build_report_detail_tables(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table)
     decisions = tables["决策分析"]
@@ -897,7 +738,7 @@ def build_generic_report_pdf_summary_markdown(
     metrics: list[Metric],
     group_label: str,
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
-    top_n: int = 10,
+    top_n: int = 8,
 ) -> str:
     tables = build_generic_report_detail_tables(data, thresholds, metrics, threshold_bounds)
     summary = tables["汇总数据"]
@@ -1069,14 +910,14 @@ def build_report_docx_bytes(markdown_text: str) -> bytes:
 def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images: list[tuple[str, bytes]] | None = None) -> bytes:
     try:
         from reportlab.lib import colors
-        from reportlab.lib.enums import TA_LEFT
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.platypus import Image as ReportImage
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ModuleNotFoundError as exc:
         raise RuntimeError("未安装 reportlab，无法生成 PDF 报告。请先执行 pip install reportlab。") from exc
 
@@ -1091,57 +932,160 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
         "ReportBase",
         parent=styles["Normal"],
         fontName=font_name,
-        fontSize=9,
-        leading=13,
+        fontSize=9.2,
+        leading=13.5,
         alignment=TA_LEFT,
         wordWrap="CJK",
+        textColor=colors.HexColor("#243447"),
     )
     title_style = ParagraphStyle(
         "ReportTitle",
         parent=base_style,
-        fontSize=18,
-        leading=24,
-        spaceAfter=10,
+        fontSize=21,
+        leading=28,
+        spaceAfter=6,
+        textColor=colors.HexColor("#111827"),
+    )
+    subtitle_style = ParagraphStyle(
+        "ReportSubtitle",
+        parent=base_style,
+        fontSize=8.5,
+        leading=12,
+        textColor=colors.HexColor("#667085"),
+        spaceAfter=12,
     )
     heading_style = ParagraphStyle(
         "ReportHeading",
         parent=base_style,
-        fontSize=13,
+        fontSize=13.5,
         leading=18,
-        spaceBefore=12,
-        spaceAfter=6,
+        spaceBefore=14,
+        spaceAfter=7,
         textColor=colors.HexColor("#111827"),
+        keepWithNext=True,
     )
     meta_style = ParagraphStyle(
         "ReportMeta",
         parent=base_style,
-        fontSize=8,
-        leading=11,
+        fontSize=8.2,
+        leading=11.5,
         textColor=colors.HexColor("#667085"),
-        spaceAfter=10,
+        spaceAfter=6,
+    )
+    chart_title_style = ParagraphStyle(
+        "ReportChartTitle",
+        parent=base_style,
+        fontSize=9,
+        leading=12,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor("#344054"),
+        spaceAfter=3,
     )
     list_style = ParagraphStyle(
         "ReportList",
         parent=base_style,
-        leftIndent=10,
-        firstLineIndent=-7,
-        spaceAfter=3,
+        leftIndent=12,
+        firstLineIndent=-8,
+        spaceAfter=2.5,
     )
     table_cell_style = ParagraphStyle(
         "ReportTableCell",
         parent=base_style,
-        fontSize=6,
-        leading=8,
+        fontSize=6.4,
+        leading=8.2,
         wordWrap="CJK",
     )
     table_header_style = ParagraphStyle(
         "ReportTableHeader",
         parent=table_cell_style,
         textColor=colors.HexColor("#111827"),
+        fontSize=6.6,
+        leading=8.4,
     )
 
     def paragraph(text: object, style: ParagraphStyle = base_style) -> Paragraph:
         return Paragraph(html.escape(str(text)).replace("\n", "<br/>"), style)
+
+    def scaled_report_image(image_bytes: bytes, max_width: float, max_height: float) -> ReportImage:
+        try:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                width, height = source.size
+        except Exception:
+            width, height = 1100, 620
+        ratio = min(max_width / max(width, 1), max_height / max(height, 1))
+        return ReportImage(io.BytesIO(image_bytes), width=width * ratio, height=height * ratio)
+
+    def chart_block(image_title: str, image_bytes: bytes, max_width: float, max_height: float) -> list[object]:
+        return [
+            paragraph(image_title, chart_title_style),
+            scaled_report_image(image_bytes, max_width, max_height),
+        ]
+
+    def chart_rows(image_items: list[tuple[str, bytes]], max_width: float) -> list[object]:
+        flowables: list[object] = []
+        index = 0
+        while index < len(image_items):
+            title_text = image_items[index][0]
+            is_wide = any(keyword in title_text for keyword in ("时间轴", "趋势", "容量"))
+            if is_wide or index == len(image_items) - 1:
+                flowables.append(KeepTogether([*chart_block(*image_items[index], max_width, 94 * mm), Spacer(1, 7)]))
+                index += 1
+                continue
+            left = chart_block(*image_items[index], max_width / 2 - 4 * mm, 70 * mm)
+            right = chart_block(*image_items[index + 1], max_width / 2 - 4 * mm, 70 * mm)
+            table = Table([[left, right]], colWidths=[max_width / 2, max_width / 2])
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                        ("TOPPADDING", (0, 0), (-1, -1), 0),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]
+                )
+            )
+            flowables.append(KeepTogether([table, Spacer(1, 7)]))
+            index += 2
+        return flowables
+
+    def table_column_widths(headers: list[str], max_width: float) -> list[float]:
+        if not headers:
+            return [max_width]
+        weights = []
+        for header in headers:
+            text = str(header)
+            if text in {"主要原因", "扣分原因", "详情", "适用说明", "正常区间/阈值"}:
+                weights.append(2.4)
+            elif text in {"数据源", "场景", "指标", "风险等级", "判断", "持续时长"}:
+                weights.append(1.35)
+            else:
+                weights.append(1.0)
+        total = sum(weights)
+        return [max_width * weight / total for weight in weights]
+
+    def report_table(headers_raw: list[str], rows_raw: list[list[str]], max_width: float) -> Table:
+        headers = [paragraph(header, table_header_style) for header in headers_raw]
+        rows = [[paragraph(cell, table_cell_style) for cell in row] for row in rows_raw]
+        table = Table([headers, *rows], colWidths=table_column_widths(headers_raw, max_width), repeatRows=1)
+        style_commands = [
+            ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eaf1fb")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#111827")),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d0d7de")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]
+        for row_index in range(1, len(rows) + 1):
+            if row_index % 2 == 0:
+                style_commands.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#f8fafc")))
+        table.setStyle(TableStyle(style_commands))
+        return table
 
     blocks = _markdown_blocks(markdown_text)
     report_title = title or next((str(block["text"]) for block in blocks if block["type"] == "heading" and block["level"] == 1), "分析报告")
@@ -1150,25 +1094,20 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
     doc = SimpleDocTemplate(
         output,
         pagesize=page_size,
-        leftMargin=12 * mm,
-        rightMargin=12 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
+        leftMargin=13 * mm,
+        rightMargin=13 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
         title=report_title,
     )
     available_width = page_size[0] - doc.leftMargin - doc.rightMargin
     story = [
         paragraph(report_title, title_style),
-        paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", meta_style),
+        paragraph(f"导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}　|　PDF 摘要报告　|　完整明细见 ZIP 内 HTML / Markdown / Excel", subtitle_style),
     ]
     if images:
         story.append(paragraph("关键图表", heading_style))
-        image_width = available_width
-        image_height = image_width * 0.52
-        for image_title, image_bytes in images:
-            story.append(paragraph(image_title, meta_style))
-            story.append(ReportImage(io.BytesIO(image_bytes), width=image_width, height=image_height))
-            story.append(Spacer(1, 8))
+        story.extend(chart_rows(images, available_width))
 
     skip_first_h1 = True
     for block in blocks:
@@ -1178,10 +1117,11 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
             if level == 1 and skip_first_h1:
                 skip_first_h1 = False
                 continue
-            story.append(paragraph(block["text"], heading_style if level <= 2 else base_style))
+            story.append(KeepTogether([paragraph(block["text"], heading_style if level <= 2 else base_style), Spacer(1, 2)]))
         elif block_type == "list":
-            for item in block["items"]:
-                story.append(paragraph(f"- {item}", list_style))
+            list_items = [paragraph(f"- {item}", list_style) for item in block["items"]]
+            story.append(KeepTogether(list_items[:4]))
+            story.extend(list_items[4:])
         elif block_type == "table":
             raw_headers = [str(header) for header in block["headers"]]
             raw_rows = [[str(cell) for cell in row] for row in block["rows"]]
@@ -1197,32 +1137,25 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
                     row_slices.append(row_slice)
                 if start > 0:
                     story.append(paragraph(f"续表：第 {start + 1}-{min(end, len(raw_headers))} 列", meta_style))
-                headers = [paragraph(header, table_header_style) for header in header_slice]
-                rows = [[paragraph(cell, table_cell_style) for cell in row] for row in row_slices]
-                column_count = max(1, len(headers))
-                col_widths = [available_width / column_count] * column_count
-                table = Table([headers, *rows], colWidths=col_widths, repeatRows=1)
-                table.setStyle(
-                    TableStyle(
-                        [
-                            ("FONTNAME", (0, 0), (-1, -1), font_name),
-                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2f7")),
-                            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d0d7de")),
-                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 3),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-                            ("TOPPADDING", (0, 0), (-1, -1), 3),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                        ]
-                    )
-                )
+                table = report_table(header_slice, row_slices, available_width)
                 story.append(table)
-                story.append(Spacer(1, 8))
+                story.append(Spacer(1, 7))
         else:
             story.append(paragraph(block["text"], base_style))
             story.append(Spacer(1, 4))
 
-    doc.build(story)
+    def draw_page(canvas: object, document: object) -> None:
+        canvas.saveState()
+        canvas.setFont(font_name, 7)
+        canvas.setFillColor(colors.HexColor("#667085"))
+        canvas.drawString(document.leftMargin, 8 * mm, report_title)
+        canvas.drawRightString(page_size[0] - document.rightMargin, 8 * mm, f"第 {canvas.getPageNumber()} 页")
+        canvas.setStrokeColor(colors.HexColor("#e5e7eb"))
+        canvas.setLineWidth(0.4)
+        canvas.line(document.leftMargin, 11 * mm, page_size[0] - document.rightMargin, 11 * mm)
+        canvas.restoreState()
+
+    doc.build(story, onFirstPage=draw_page, onLaterPages=draw_page)
     return output.getvalue()
 
 
