@@ -16,6 +16,29 @@ from .models import Metric
 from .stats import coefficient_of_variation, iqr, percentile, percentile_95
 
 
+def _compute_metric_stats(
+    values: pd.Series,
+    group: pd.DataFrame | None = None,
+    metric_key: str = "",
+) -> dict[str, float]:
+    """Compute standard metric statistics: mean, max, p90, p95, p99, std, iqr, cv, slope."""
+    result: dict[str, float] = {}
+    result["mean"] = float(values.mean())
+    result["max"] = float(values.max())
+    result["p90"] = float(percentile(values, 0.90))
+    result["p95"] = float(percentile_95(values))
+    result["p99"] = float(percentile(values, 0.99))
+    result["std"] = float(values.std(ddof=0))
+    result["iqr"] = float(iqr(values))
+    result["cv"] = float(coefficient_of_variation(values))
+    if group is not None and metric_key:
+        slope, _ = linear_slope_per_minute(group, metric_key)
+        result["slope"] = float(slope) if not pd.isna(slope) else np.nan
+    else:
+        result["slope"] = np.nan
+    return result
+
+
 def summarize(
     data: pd.DataFrame,
     thresholds: dict[str, float],
@@ -45,16 +68,16 @@ def summarize(
             values = group[metric.key].dropna()
             if values.empty:
                 continue
-            row[f"{metric.label}均值"] = values.mean()
-            row[f"{metric.label}峰值"] = values.max()
-            row[f"{metric.label}P90"] = percentile(values, 0.90)
-            row[f"{metric.label}P95"] = percentile_95(values)
-            row[f"{metric.label}P99"] = percentile(values, 0.99)
-            row[f"{metric.label}标准差"] = values.std(ddof=0)
-            row[f"{metric.label}IQR"] = iqr(values)
-            row[f"{metric.label}变异系数(%)"] = coefficient_of_variation(values)
-            slope, _ = linear_slope_per_minute(group, metric.key)
-            row[f"{metric.label}趋势斜率/分钟"] = slope
+            stats = _compute_metric_stats(values, group, metric.key)
+            row[f"{metric.label}均值"] = stats["mean"]
+            row[f"{metric.label}峰值"] = stats["max"]
+            row[f"{metric.label}P90"] = stats["p90"]
+            row[f"{metric.label}P95"] = stats["p95"]
+            row[f"{metric.label}P99"] = stats["p99"]
+            row[f"{metric.label}标准差"] = stats["std"]
+            row[f"{metric.label}IQR"] = stats["iqr"]
+            row[f"{metric.label}变异系数(%)"] = stats["cv"]
+            row[f"{metric.label}趋势斜率/分钟"] = stats["slope"]
             row[f"{metric.label}峰值发生在"] = format_peak_offset(group, metric.key)
             if metric.key in thresholds or any(bound is not None for bound in metric_alert_bounds(threshold_bounds, metric)):
                 mask = metric_alert_mask(values, metric, thresholds, threshold_bounds)
@@ -77,15 +100,16 @@ def metric_stats(data: pd.DataFrame, group_cols: list[str], metrics: list[Metric
             values = group[metric.key].dropna()
             if values.empty:
                 continue
-            row[f"{metric.key}_mean"] = values.mean()
-            row[f"{metric.key}_max"] = values.max()
-            row[f"{metric.key}_p90"] = percentile(values, 0.90)
-            row[f"{metric.key}_p95"] = percentile_95(values)
-            row[f"{metric.key}_p99"] = percentile(values, 0.99)
-            row[f"{metric.key}_std"] = values.std(ddof=0)
-            row[f"{metric.key}_iqr"] = iqr(values)
-            row[f"{metric.key}_cv"] = coefficient_of_variation(values)
-            row[f"{metric.key}_slope"] = linear_slope_per_minute(group, metric.key)[0]
+            stats = _compute_metric_stats(values, group, metric.key)
+            row[f"{metric.key}_mean"] = stats["mean"]
+            row[f"{metric.key}_max"] = stats["max"]
+            row[f"{metric.key}_p90"] = stats["p90"]
+            row[f"{metric.key}_p95"] = stats["p95"]
+            row[f"{metric.key}_p99"] = stats["p99"]
+            row[f"{metric.key}_std"] = stats["std"]
+            row[f"{metric.key}_iqr"] = stats["iqr"]
+            row[f"{metric.key}_cv"] = stats["cv"]
+            row[f"{metric.key}_slope"] = stats["slope"]
         rows.append(row)
     return pd.DataFrame(rows)
 
