@@ -155,7 +155,7 @@ def render_distribution(data: pd.DataFrame, selected_scenes: list[str], metrics:
         st.info("控制图至少需要 3 个有效采样点。")
     else:
         mean_value = float(control_values[control_metric.key].mean())
-        std_value = float(control_values[control_metric.key].std(ddof=0))
+        std_value = float(control_values[control_metric.key].std(ddof=1))
         ucl = mean_value + 3 * std_value
         lcl = mean_value - 3 * std_value
         out_mask = (control_values[control_metric.key] > ucl) | (control_values[control_metric.key] < lcl)
