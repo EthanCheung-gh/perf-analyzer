@@ -21,6 +21,11 @@ def build_batch_export_zip(
     group_label: str,
     export_mode: str = "轻量模式",
     export_options: dict[str, object] | None = None,
+    trend_band_mode: str = "自动P5-P95",
+    trend_show_rolling: bool = False,
+    trend_rolling_mode: str = "按采样点数",
+    trend_rolling_window: int = 5,
+    trend_rolling_time_seconds: float = 300.0,
 ) -> bytes:
     return build_batch_export_zip_core(
         data,
@@ -40,4 +45,9 @@ def build_batch_export_zip(
         build_sampling_interval_line=build_sampling_interval_line,
         export_mode=export_mode,
         export_options=export_options,
+        trend_band_mode=trend_band_mode,
+        trend_show_rolling=trend_show_rolling,
+        trend_rolling_mode=trend_rolling_mode,
+        trend_rolling_window=trend_rolling_window,
+        trend_rolling_time_seconds=trend_rolling_time_seconds,
     )

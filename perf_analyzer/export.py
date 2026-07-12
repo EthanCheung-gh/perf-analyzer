@@ -43,13 +43,18 @@ def build_batch_export_zip(
     *,
     build_alerts_table: Callable[[pd.DataFrame, list[Metric], dict[str, float], dict[str, tuple[float | None, float | None]]], pd.DataFrame],
     build_sampling_interval_tables: Callable[[pd.DataFrame], tuple[pd.DataFrame, pd.DataFrame]],
-    build_trend_figure: Callable[[pd.DataFrame, Metric, dict[str, float], dict[str, tuple[float | None, float | None]]], go.Figure],
+    build_trend_figure: Callable[[pd.DataFrame, Metric, dict[str, float], dict[str, tuple[float | None, float | None]], str, bool, str, int, float], go.Figure],
     build_distribution_figure: Callable[[pd.DataFrame, Metric], go.Figure],
     build_alert_timeline_figure: Callable[[pd.DataFrame], go.Figure],
     build_sampling_interval_box: Callable[[pd.DataFrame], go.Figure],
     build_sampling_interval_line: Callable[[pd.DataFrame, str], go.Figure],
     export_mode: str = "轻量模式",
     export_options: dict[str, object] | None = None,
+    trend_band_mode: str = "自动P5-P95",
+    trend_show_rolling: bool = False,
+    trend_rolling_mode: str = "按采样点数",
+    trend_rolling_window: int = 5,
+    trend_rolling_time_seconds: float = 300.0,
 ) -> bytes:
     filtered = with_display_label(data[data["scene"].isin(selected_scenes)].copy())
     use_shared_plotly = export_mode.startswith("轻量")
@@ -110,7 +115,17 @@ def build_batch_export_zip(
                 metric = metric_lookup.get(metric_key)
                 if metric is None or metric.key not in filtered or filtered[metric.key].dropna().empty:
                     continue
-                fig = build_trend_figure(filtered, metric, thresholds, threshold_bounds)
+                fig = build_trend_figure(
+                    filtered,
+                    metric,
+                    thresholds,
+                    threshold_bounds,
+                    band_mode=trend_band_mode,
+                    show_rolling=trend_show_rolling,
+                    rolling_mode=trend_rolling_mode,
+                    rolling_window=trend_rolling_window,
+                    rolling_time_seconds=trend_rolling_time_seconds,
+                )
                 path = f"charts/{safe_filename('趋势_' + metric.label)}.html"
                 archive.writestr(path, figure_to_html_bytes(fig, include_plotlyjs=chart_include_plotlyjs))
                 manifest["charts"].append(path)
