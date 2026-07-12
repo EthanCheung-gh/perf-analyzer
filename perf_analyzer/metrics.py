@@ -5,7 +5,7 @@ import pandas as pd
 from .constants import META_COLUMNS, STANDARD_METRICS
 from .models import Metric
 from .stats import percentile_95
-from .utils import dynamic_metric_label
+from .utils import dynamic_metric_label, is_numeric_like
 
 
 def discover_metrics(data: pd.DataFrame) -> list[Metric]:
@@ -19,7 +19,7 @@ def discover_metrics(data: pd.DataFrame) -> list[Metric]:
     for column in data.columns:
         if column in existing or column in META_COLUMNS or column == "total_memory_mb":
             continue
-        if pd.api.types.is_numeric_dtype(data[column]) and data[column].notna().any():
+        if is_numeric_like(data[column]) and data[column].notna().any():
             label = dynamic_metric_label(column) if column.startswith("extra::") else column
             default_threshold = percentile_95(data[column])
             if pd.isna(default_threshold):
