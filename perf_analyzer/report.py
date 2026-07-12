@@ -24,6 +24,7 @@ from .analysis import (
     summarize,
     trend_analysis,
 )
+from .constants import REPORT_SECTIONS, REPORT_SECTIONS_ALWAYS, REPORT_SECTIONS_GENERIC
 from .models import Metric
 from .ui_helpers import with_display_label
 
@@ -459,7 +460,10 @@ def build_report_markdown(
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     config_table: pd.DataFrame | None = None,
     config_notes: list[str] | None = None,
+    enabled_sections: set[str] | None = None,
 ) -> str:
+    if enabled_sections is None:
+        enabled_sections = set(REPORT_SECTIONS.keys())
     summary = summarize(data, thresholds, metrics, threshold_bounds)
     leaks = leak_analysis(data, slope_threshold)
     trends = trend_analysis(data, metrics)
@@ -477,76 +481,42 @@ def build_report_markdown(
     stability = stability_score_analysis(decisions)
     bottlenecks = bottleneck_hints(data, thresholds, metrics)
     conclusions = build_conclusions(data, thresholds, slope_threshold, metrics, threshold_bounds)
-    lines = [
-        "# 应用资源消耗分析报告",
-        "",
-        "## 测试结论",
-        "",
-        *[f"- {item}" for item in conclusions],
-        f"- 发布门禁默认判断：{gate_status}。",
-        "",
-        "## 决策分析",
-        "",
-        dataframe_to_markdown(decisions) if not decisions.empty else "无场景风险评级数据。",
-        "",
-        "## 发布门禁",
-        "",
-        dataframe_to_markdown(gate_rules) if not gate_rules.empty else "无发布门禁数据。",
-        "",
-        "## 稳定性评分",
-        "",
-        dataframe_to_markdown(stability) if not stability.empty else "无稳定性评分数据。",
-        "",
-        "## 瓶颈提示",
-        "",
-        dataframe_to_markdown(bottlenecks) if not bottlenecks.empty else "无瓶颈提示数据。",
-        "",
-        "## 汇总数据",
-        "",
-        dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。",
-        "",
-        "## 告警持续性",
-        "",
-        dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
-        "",
-        "## 异常段",
-        "",
-        dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
-        "",
-        "## 内存趋势检测",
-        "",
-        dataframe_to_markdown(leaks) if not leaks.empty else "无内存趋势数据。",
-        "",
-        "## 全指标趋势斜率",
-        "",
-        dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。",
-        "",
-        "## 资源效率",
-        "",
-        dataframe_to_markdown(efficiency) if not efficiency.empty else "无资源效率数据。",
-        "",
-        "## 配置建议",
-        "",
-        dataframe_to_markdown(config_table) if config_table is not None and not config_table.empty else "未生成配置建议。",
-        "",
-        *[f"- {item}" for item in config_notes or []],
-        "",
-        "## 分析口径",
-        "",
-        "- 均值：场景内全部采样点平均值",
-        "- 峰值：场景内最大采样值",
-        "- P90 / P95 / P99：对应分位值，用于观察高水位和尾部风险",
-        "- 超阈次数：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量",
-        "- 超阈占比：超阈采样点数量 / 有效采样点数量",
-        "- 最大连续超阈：同一指标连续处于超阈状态的最长时间",
-        "- 标准差 / IQR / 变异系数：用于观察资源波动性",
-        "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟",
-        "- 资源效率：把 CPU、内存、IO、网络、磁盘等资源消耗按吞吐或并发归一化",
-        "- 风险评分：综合超阈、连续超阈、泄漏、失败率、响应时间、FPS 等规则扣分",
-        "- 发布门禁：按风险等级、泄漏、超阈、失败请求等规则判断是否通过",
-        "- 内存斜率：按时间对内存占用做线性回归，单位 MB/分钟",
-    ]
-    return "\n".join(lines)
+    sections: list[str] = ["# 应用资源消耗分析报告", ""]
+
+    sections.extend(["## 测试结论", "", *[f"- {item}" for item in conclusions], f"- 发布门禁默认判断：{gate_status}。", ""])
+
+    if "decision" in enabled_sections:
+        sections.extend(["## 决策分析", "", dataframe_to_markdown(decisions) if not decisions.empty else "无场景风险评级数据。", ""])
+    if "release_gate" in enabled_sections:
+        sections.extend(["## 发布门禁", "", dataframe_to_markdown(gate_rules) if not gate_rules.empty else "无发布门禁数据。", ""])
+    if "stability" in enabled_sections:
+        sections.extend(["## 稳定性评分", "", dataframe_to_markdown(stability) if not stability.empty else "无稳定性评分数据。", ""])
+    if "bottleneck" in enabled_sections:
+        sections.extend(["## 瓶颈提示", "", dataframe_to_markdown(bottlenecks) if not bottlenecks.empty else "无瓶颈提示数据。", ""])
+    if "summary" in enabled_sections:
+        sections.extend(["## 汇总数据", "", dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。", ""])
+    if "alert_continuity" in enabled_sections:
+        sections.extend(["## 告警持续性", "", dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。", ""])
+    if "segments" in enabled_sections:
+        sections.extend(["## 异常段", "", dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。", ""])
+    if "leak" in enabled_sections:
+        sections.extend(["## 内存趋势检测", "", dataframe_to_markdown(leaks) if not leaks.empty else "无内存趋势数据。", ""])
+    if "trend_slope" in enabled_sections:
+        sections.extend(["## 全指标趋势斜率", "", dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。", ""])
+    if "efficiency" in enabled_sections:
+        sections.extend(["## 资源效率", "", dataframe_to_markdown(efficiency) if not efficiency.empty else "无资源效率数据。", ""])
+    if "config_recommendation" in enabled_sections:
+        sections.extend(["## 配置建议", "", dataframe_to_markdown(config_table) if config_table is not None and not config_table.empty else "未生成配置建议。", "", *[f"- {item}" for item in config_notes or []], ""])
+
+    sections.extend([
+        "## 分析口径", "", "- 均值：场景内全部采样点平均值", "- 峰值：场景内最大采样值",
+        "- P90 / P95 / P99：对应分位值，用于观察高水位和尾部风险", "- 超阈次数：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量",
+        "- 超阈占比：超阈采样点数量 / 有效采样点数量", "- 最大连续超阈：同一指标连续处于超阈状态的最长时间",
+        "- 标准差 / IQR / 变异系数：用于观察资源波动性", "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟",
+        "- 资源效率：把 CPU、内存、IO、网络、磁盘等资源消耗按吞吐或并发归一化", "- 风险评分：综合超阈、连续超阈、泄漏、失败率、响应时间、FPS 等规则扣分",
+        "- 发布门禁：按风险等级、泄漏、超阈、失败请求等规则判断是否通过", "- 内存斜率：按时间对内存占用做线性回归，单位 MB/分钟",
+    ])
+    return "\n".join(sections)
 
 
 def build_generic_report_markdown(
@@ -555,44 +525,27 @@ def build_generic_report_markdown(
     metrics: list[Metric],
     group_label: str,
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    enabled_sections: set[str] | None = None,
 ) -> str:
+    if enabled_sections is None:
+        enabled_sections = set(REPORT_SECTIONS_GENERIC.keys())
     summary = summarize(data, thresholds, metrics, threshold_bounds)
     trends = trend_analysis(data, metrics)
     alert_summary = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
     segments = alert_segments(data, thresholds, metrics, threshold_bounds)
     conclusions = build_generic_conclusions(data, thresholds, metrics, threshold_bounds)
-    lines = [
-        "# 通用时序分析报告",
-        "",
-        "## 分析结论",
-        "",
-        *[f"- {item}" for item in conclusions],
-        "",
-        "## 汇总数据",
-        "",
-        dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。",
-        "",
-        "## 告警持续性",
-        "",
-        dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。",
-        "",
-        "## 异常段",
-        "",
-        dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
-        "",
-        "## 全指标趋势斜率",
-        "",
-        dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。",
-        "",
-        "## 分析口径",
-        "",
-        f"- {group_label}：由 Excel sheet 名提供。",
-        "- 均值 / 峰值 / P90 / P95 / P99：用于观察整体水平、高水位和尾部风险。",
-        "- 超阈占比：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量 / 有效采样点数量。",
-        "- 最大连续超阈：同一指标连续处于超阈状态的最长时间。",
-        "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟。",
-    ]
-    return "\n".join(lines)
+    sections: list[str] = ["# 通用时序分析报告", ""]
+    sections.extend(["## 分析结论", "", *[f"- {item}" for item in conclusions], ""])
+    if "summary" in enabled_sections:
+        sections.extend(["## 汇总数据", "", dataframe_to_markdown(summary) if not summary.empty else "无汇总数据。", ""])
+    if "alert_continuity" in enabled_sections:
+        sections.extend(["## 告警持续性", "", dataframe_to_markdown(alert_summary.drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。", ""])
+    if "segments" in enabled_sections:
+        sections.extend(["## 异常段", "", dataframe_to_markdown(segments.drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。", ""])
+    if "trend_slope" in enabled_sections:
+        sections.extend(["## 全指标趋势斜率", "", dataframe_to_markdown(trends) if not trends.empty else "无趋势斜率数据。", ""])
+    sections.extend(["## 分析口径", "", f"- {group_label}：由 Excel sheet 名提供。", "- 均值 / 峰值 / P90 / P95 / P99：用于观察整体水平、高水位和尾部风险。", "- 超阈占比：按单阈值方向，或按 lower_threshold / upper_threshold 正常区间判断的异常采样点数量 / 有效采样点数量。", "- 最大连续超阈：同一指标连续处于超阈状态的最长时间。", "- 趋势斜率：按时间对指标做线性回归，单位为指标值/分钟。"])
+    return "\n".join(sections)
 
 
 def build_report_detail_tables(
@@ -650,7 +603,10 @@ def build_report_pdf_summary_markdown(
     config_table: pd.DataFrame | None = None,
     config_notes: list[str] | None = None,
     top_n: int = 8,
+    enabled_sections: set[str] | None = None,
 ) -> str:
+    if enabled_sections is None:
+        enabled_sections = set(REPORT_SECTIONS.keys())
     tables = build_report_detail_tables(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table)
     decisions = tables["决策分析"]
     gate_rules = tables["发布门禁"]
@@ -669,67 +625,28 @@ def build_report_pdf_summary_markdown(
     if not leaks.empty and "判断" in leaks:
         leak_names = [f"{row['数据源']} / {row['场景']}" for _, row in leaks[leaks["判断"] == "疑似泄漏"].iterrows()]
 
-    lines = [
-        "# 应用资源消耗分析报告",
-        "",
-        "## 摘要结论",
-        "",
-        f"- 发布门禁默认判断：{gate_status}。",
-        f"- 当前阈值下超阈采样点：{alert_count} 个。",
-        f"- 场景风险概况：高风险 {high_risk} 个，中风险 {medium_risk} 个。",
-        f"- 内存趋势检测：{'发现疑似泄漏：' + '、'.join(leak_names) if leak_names else '未发现明显泄漏场景'}。",
-        f"- PDF 仅保留摘要和 Top {top_n} 明细；完整明细请查看 ZIP 内的 HTML、Markdown 或 report_details.xlsx。",
-        "",
-        "## 发布门禁",
-        "",
-        dataframe_to_markdown(gate_rules) if not gate_rules.empty else "无发布门禁数据。",
-        "",
-        "## 场景风险 Top",
-        "",
-        dataframe_to_markdown(
-            _select_existing_columns(
-                _top_rows(decisions, "风险评分", top_n),
-                ["数据源", "场景", "风险评分", "风险等级", "最大超阈占比(%)", "最长连续超阈", "内存趋势", "主要原因"],
-            )
-        )
-        if not decisions.empty
-        else "无场景风险评级数据。",
-        "",
-        "## 稳定性评分 Top",
-        "",
-        dataframe_to_markdown(_top_rows(stability, "稳定性评分", top_n, ascending=True)) if not stability.empty else "无稳定性评分数据。",
-        "",
-        "## 关键瓶颈提示",
-        "",
-        dataframe_to_markdown(_top_rows(bottlenecks, None, top_n)) if not bottlenecks.empty else "无瓶颈提示数据。",
-        "",
-        "## 告警持续性 Top",
-        "",
-        dataframe_to_markdown(_top_rows(alert_summary, "超阈占比(%)", top_n).drop(columns=["最大连续超阈(分钟)"], errors="ignore"))
-        if not alert_summary.empty
-        else "当前阈值下无超阈持续性数据。",
-        "",
-        "## 异常段 Top",
-        "",
-        dataframe_to_markdown(_top_rows(segments, "持续时长(分钟)", top_n).drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
-        "",
-        "## 内存趋势检测",
-        "",
-        dataframe_to_markdown(_top_rows(leaks, "内存斜率(MB/分钟)", top_n)) if not leaks.empty else "无内存趋势数据。",
-        "",
-        "## 趋势斜率 Top",
-        "",
-        dataframe_to_markdown(_top_rows(trends.assign(_abs_slope=trends["趋势斜率/分钟"].abs()) if "趋势斜率/分钟" in trends else trends, "_abs_slope", top_n).drop(columns=["_abs_slope"], errors="ignore"))
-        if not trends.empty
-        else "无趋势斜率数据。",
-        "",
-        "## 配置建议",
-        "",
-        dataframe_to_markdown(config_table) if config_table is not None and not config_table.empty else "未生成配置建议。",
-        "",
-        *[f"- {item}" for item in (config_notes or [])[:5]],
-    ]
-    return "\n".join(lines)
+    sections: list[str] = ["# 应用资源消耗分析报告", ""]
+    if "conclusions" in enabled_sections:
+        sections.extend(["## 摘要结论", "", f"- 发布门禁默认判断：{gate_status}。", f"- 当前阈值下超阈采样点：{alert_count} 个。", f"- 场景风险概况：高风险 {high_risk} 个，中风险 {medium_risk} 个。", f"- 内存趋势检测：{'发现疑似泄漏：' + '、'.join(leak_names) if leak_names else '未发现明显泄漏场景'}。", f"- PDF 仅保留摘要和 Top {top_n} 明细；完整明细请查看 ZIP 内的 HTML、Markdown 或 report_details.xlsx。", ""])
+    if "release_gate" in enabled_sections:
+        sections.extend(["## 发布门禁", "", dataframe_to_markdown(gate_rules) if not gate_rules.empty else "无发布门禁数据。", ""])
+    if "decision" in enabled_sections:
+        sections.extend(["## 场景风险 Top", "", dataframe_to_markdown(_select_existing_columns(_top_rows(decisions, "风险评分", top_n), ["数据源", "场景", "风险评分", "风险等级", "最大超阈占比(%)", "最长连续超阈", "内存趋势", "主要原因"])) if not decisions.empty else "无场景风险评级数据。", ""])
+    if "stability" in enabled_sections:
+        sections.extend(["## 稳定性评分 Top", "", dataframe_to_markdown(_top_rows(stability, "稳定性评分", top_n, ascending=True)) if not stability.empty else "无稳定性评分数据。", ""])
+    if "bottleneck" in enabled_sections:
+        sections.extend(["## 关键瓶颈提示", "", dataframe_to_markdown(_top_rows(bottlenecks, None, top_n)) if not bottlenecks.empty else "无瓶颈提示数据。", ""])
+    if "alert_continuity" in enabled_sections:
+        sections.extend(["## 告警持续性 Top", "", dataframe_to_markdown(_top_rows(alert_summary, "超阈占比(%)", top_n).drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。", ""])
+    if "segments" in enabled_sections:
+        sections.extend(["## 异常段 Top", "", dataframe_to_markdown(_top_rows(segments, "持续时长(分钟)", top_n).drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。", ""])
+    if "leak" in enabled_sections:
+        sections.extend(["## 内存趋势检测", "", dataframe_to_markdown(_top_rows(leaks, "内存斜率(MB/分钟)", top_n)) if not leaks.empty else "无内存趋势数据。", ""])
+    if "trend_slope" in enabled_sections:
+        sections.extend(["## 趋势斜率 Top", "", dataframe_to_markdown(_top_rows(trends.assign(_abs_slope=trends["趋势斜率/分钟"].abs()) if "趋势斜率/分钟" in trends else trends, "_abs_slope", top_n).drop(columns=["_abs_slope"], errors="ignore")) if not trends.empty else "无趋势斜率数据。", ""])
+    if "config_recommendation" in enabled_sections:
+        sections.extend(["## 配置建议", "", dataframe_to_markdown(config_table) if config_table is not None and not config_table.empty else "未生成配置建议。", "", *[f"- {item}" for item in (config_notes or [])[:5]]])
+    return "\n".join(sections)
 
 
 def build_generic_report_pdf_summary_markdown(
@@ -739,47 +656,29 @@ def build_generic_report_pdf_summary_markdown(
     group_label: str,
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
     top_n: int = 8,
+    enabled_sections: set[str] | None = None,
 ) -> str:
+    if enabled_sections is None:
+        enabled_sections = set(REPORT_SECTIONS_GENERIC.keys())
     tables = build_generic_report_detail_tables(data, thresholds, metrics, threshold_bounds)
     summary = tables["汇总数据"]
     alert_summary = tables["告警持续性"]
     segments = tables["异常段"]
     trends = tables["全指标趋势斜率"]
     conclusions = build_generic_conclusions(data, thresholds, metrics, threshold_bounds)
-    lines = [
-        "# 通用时序分析报告",
-        "",
-        "## 摘要结论",
-        "",
-        *[f"- {item}" for item in conclusions[:5]],
-        f"- PDF 仅保留摘要和 Top {top_n} 明细；完整明细请查看 ZIP 内的 HTML、Markdown 或 report_details.xlsx。",
-        "",
-        "## 汇总数据摘要",
-        "",
-        dataframe_to_markdown(_top_rows(summary, None, top_n)) if not summary.empty else "无汇总数据。",
-        "",
-        "## 告警持续性 Top",
-        "",
-        dataframe_to_markdown(_top_rows(alert_summary, "超阈占比(%)", top_n).drop(columns=["最大连续超阈(分钟)"], errors="ignore"))
-        if not alert_summary.empty
-        else "当前阈值下无超阈持续性数据。",
-        "",
-        "## 异常段 Top",
-        "",
-        dataframe_to_markdown(_top_rows(segments, "持续时长(分钟)", top_n).drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。",
-        "",
-        "## 趋势斜率 Top",
-        "",
-        dataframe_to_markdown(_top_rows(trends.assign(_abs_slope=trends["趋势斜率/分钟"].abs()) if "趋势斜率/分钟" in trends else trends, "_abs_slope", top_n).drop(columns=["_abs_slope"], errors="ignore"))
-        if not trends.empty
-        else "无趋势斜率数据。",
-        "",
-        "## 分析口径",
-        "",
-        f"- {group_label}：由 Excel sheet 名提供。",
-        "- PDF 报告面向阅读，仅展示核心摘要；完整数据保存在明细 Excel 中。",
-    ]
-    return "\n".join(lines)
+    sections: list[str] = ["# 通用时序分析报告", ""]
+    if "conclusions" in enabled_sections:
+        sections.extend(["## 摘要结论", "", *[f"- {item}" for item in conclusions[:5]], f"- PDF 仅保留摘要和 Top {top_n} 明细；完整明细请查看 ZIP 内的 HTML、Markdown 或 report_details.xlsx。", ""])
+    if "summary" in enabled_sections:
+        sections.extend(["## 汇总数据摘要", "", dataframe_to_markdown(_top_rows(summary, None, top_n)) if not summary.empty else "无汇总数据。", ""])
+    if "alert_continuity" in enabled_sections:
+        sections.extend(["## 告警持续性 Top", "", dataframe_to_markdown(_top_rows(alert_summary, "超阈占比(%)", top_n).drop(columns=["最大连续超阈(分钟)"], errors="ignore")) if not alert_summary.empty else "当前阈值下无超阈持续性数据。", ""])
+    if "segments" in enabled_sections:
+        sections.extend(["## 异常段 Top", "", dataframe_to_markdown(_top_rows(segments, "持续时长(分钟)", top_n).drop(columns=["指标key", "持续时长(分钟)"], errors="ignore")) if not segments.empty else "当前阈值下无异常段数据。", ""])
+    if "trend_slope" in enabled_sections:
+        sections.extend(["## 趋势斜率 Top", "", dataframe_to_markdown(_top_rows(trends.assign(_abs_slope=trends["趋势斜率/分钟"].abs()) if "趋势斜率/分钟" in trends else trends, "_abs_slope", top_n).drop(columns=["_abs_slope"], errors="ignore")) if not trends.empty else "无趋势斜率数据。", ""])
+    sections.extend(["## 分析口径", "", f"- {group_label}：由 Excel sheet 名提供。", "- PDF 报告面向阅读，仅展示核心摘要；完整数据保存在明细 Excel 中。"])
+    return "\n".join(sections)
 
 
 def build_report_details_xlsx_bytes(tables: dict[str, pd.DataFrame]) -> bytes:

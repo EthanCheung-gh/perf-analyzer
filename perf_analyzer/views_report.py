@@ -5,6 +5,7 @@ import streamlit as st
 
 from .analysis import configuration_recommendation
 from .config import config_ui_float, config_ui_int
+from .constants import REPORT_SECTIONS, REPORT_SECTIONS_ALWAYS, REPORT_SECTIONS_GENERIC
 from .models import Metric
 from .report import (
     build_conclusions,
@@ -132,9 +133,24 @@ def render_report(
     for item in conclusions:
         st.write(f"- {item}")
 
-    markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
+    st.subheader("报告章节配置")
+    enabled_sections: set[str] = set()
+    with st.expander("选择要包含的报告章节", expanded=False):
+        for section_id, section_label in REPORT_SECTIONS.items():
+            default_enabled = st.session_state.get(f"report_section_{section_id}", True)
+            is_enabled = st.checkbox(
+                section_label,
+                value=default_enabled,
+                key=f"report_section_{section_id}",
+                disabled=section_id in REPORT_SECTIONS_ALWAYS,
+            )
+            if is_enabled or section_id in REPORT_SECTIONS_ALWAYS:
+                enabled_sections.add(section_id)
+        st.caption(f"已选择 {len(enabled_sections)}/{len(REPORT_SECTIONS)} 个章节（分析口径始终包含）")
+
+    markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes, enabled_sections=enabled_sections)
     html_report = build_report_html(markdown_report, "应用资源消耗分析报告")
-    pdf_markdown_report = build_report_pdf_summary_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
+    pdf_markdown_report = build_report_pdf_summary_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes, enabled_sections=enabled_sections)
     detail_tables = build_report_detail_tables(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table)
     details_xlsx = build_report_details_xlsx_bytes(detail_tables)
     pdf_images, image_errors = build_report_figure_images(data, thresholds, slope_threshold, metrics, threshold_bounds)
@@ -205,9 +221,24 @@ def render_generic_report(
     for item in conclusions:
         st.write(f"- {item}")
 
-    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds)
+    st.subheader("报告章节配置")
+    enabled_sections: set[str] = set()
+    with st.expander("选择要包含的报告章节", expanded=False):
+        for section_id, section_label in REPORT_SECTIONS_GENERIC.items():
+            default_enabled = st.session_state.get(f"report_section_{section_id}", True)
+            is_enabled = st.checkbox(
+                section_label,
+                value=default_enabled,
+                key=f"report_section_{section_id}",
+                disabled=section_id in REPORT_SECTIONS_ALWAYS,
+            )
+            if is_enabled or section_id in REPORT_SECTIONS_ALWAYS:
+                enabled_sections.add(section_id)
+        st.caption(f"已选择 {len(enabled_sections)}/{len(REPORT_SECTIONS_GENERIC)} 个章节")
+
+    markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds, enabled_sections=enabled_sections)
     html_report = build_report_html(markdown_report, "通用时序分析报告")
-    pdf_markdown_report = build_generic_report_pdf_summary_markdown(data, thresholds, metrics, group_label, threshold_bounds)
+    pdf_markdown_report = build_generic_report_pdf_summary_markdown(data, thresholds, metrics, group_label, threshold_bounds, enabled_sections=enabled_sections)
     detail_tables = build_generic_report_detail_tables(data, thresholds, metrics, threshold_bounds)
     details_xlsx = build_report_details_xlsx_bytes(detail_tables)
     pdf_images, image_errors = build_generic_report_figure_images(data, thresholds, metrics, threshold_bounds)
