@@ -373,15 +373,30 @@ def build_report_figure_images(
     slope_threshold: float,
     metrics: list[Metric],
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    enabled_sections: set[str] | None = None,
 ) -> tuple[list[tuple[str, bytes]], list[str]]:
+    if enabled_sections is None:
+        enabled_sections = {"decision", "segments", "trend_slope"}
     decisions = scene_decision_analysis(data, thresholds, metrics, slope_threshold, threshold_bounds)
     images: list[tuple[str, bytes]] = []
     errors: list[str] = []
-    _append_matplotlib_image(images, "场景风险矩阵", lambda: _build_risk_matrix_image(decisions), errors)
-    _append_matplotlib_image(images, "场景风险画像", lambda: _build_radar_image(data, decisions, thresholds), errors)
-    _append_matplotlib_image(images, "异常时间轴", lambda: _build_alert_timeline_image(data, thresholds, metrics, threshold_bounds), errors)
-    _append_matplotlib_image(images, "容量曲线", lambda: _build_capacity_curve_image(data), errors)
-    _append_matplotlib_image(images, "关键指标趋势", lambda: _build_top_trend_image(data, thresholds, metrics, threshold_bounds), errors)
+    chart_map = {
+        "decision": [
+            ("场景风险矩阵", lambda: _build_risk_matrix_image(decisions)),
+            ("场景风险画像", lambda: _build_radar_image(data, decisions, thresholds)),
+            ("容量曲线", lambda: _build_capacity_curve_image(data)),
+        ],
+        "segments": [
+            ("异常时间轴", lambda: _build_alert_timeline_image(data, thresholds, metrics, threshold_bounds)),
+        ],
+        "trend_slope": [
+            ("关键指标趋势", lambda: _build_top_trend_image(data, thresholds, metrics, threshold_bounds)),
+        ],
+    }
+    for section, charts in chart_map.items():
+        if section in enabled_sections:
+            for title, builder in charts:
+                _append_matplotlib_image(images, title, builder, errors)
     return images, errors
 
 
@@ -390,11 +405,24 @@ def build_generic_report_figure_images(
     thresholds: dict[str, float],
     metrics: list[Metric],
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    enabled_sections: set[str] | None = None,
 ) -> tuple[list[tuple[str, bytes]], list[str]]:
+    if enabled_sections is None:
+        enabled_sections = {"segments", "trend_slope"}
     images: list[tuple[str, bytes]] = []
     errors: list[str] = []
-    _append_matplotlib_image(images, "异常时间轴", lambda: _build_alert_timeline_image(data, thresholds, metrics, threshold_bounds), errors)
-    _append_matplotlib_image(images, "关键指标趋势", lambda: _build_top_trend_image(data, thresholds, metrics, threshold_bounds), errors)
+    chart_map = {
+        "segments": [
+            ("异常时间轴", lambda: _build_alert_timeline_image(data, thresholds, metrics, threshold_bounds)),
+        ],
+        "trend_slope": [
+            ("关键指标趋势", lambda: _build_top_trend_image(data, thresholds, metrics, threshold_bounds)),
+        ],
+    }
+    for section, charts in chart_map.items():
+        if section in enabled_sections:
+            for title, builder in charts:
+                _append_matplotlib_image(images, title, builder, errors)
     return images, errors
 
 

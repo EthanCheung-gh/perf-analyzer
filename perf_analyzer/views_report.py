@@ -152,13 +152,16 @@ def render_report(
     markdown_report = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes, enabled_sections=enabled_sections)
     html_report = build_report_html(markdown_report, "应用资源消耗分析报告")
     pdf_markdown_report = build_report_pdf_summary_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes, enabled_sections=enabled_sections)
+    # Word 报告排除汇总数据（表太密，Word 排版不易读）
+    word_enabled = enabled_sections - {"summary"}
+    word_markdown = build_report_markdown(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes, enabled_sections=word_enabled)
     detail_tables = build_report_detail_tables(data, thresholds, slope_threshold, metrics, threshold_bounds, config_table)
     details_xlsx = build_report_details_xlsx_bytes(detail_tables)
-    pdf_images, image_errors = build_report_figure_images(data, thresholds, slope_threshold, metrics, threshold_bounds)
+    pdf_images, image_errors = build_report_figure_images(data, thresholds, slope_threshold, metrics, threshold_bounds, enabled_sections=enabled_sections)
     docx_report = None
     docx_error = ""
     try:
-        docx_report = build_report_docx_bytes(markdown_report)
+        docx_report = build_report_docx_bytes(word_markdown)
     except RuntimeError as exc:
         docx_error = str(exc)
     pdf_report = None
@@ -241,13 +244,16 @@ def render_generic_report(
     markdown_report = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds, enabled_sections=enabled_sections)
     html_report = build_report_html(markdown_report, "通用时序分析报告")
     pdf_markdown_report = build_generic_report_pdf_summary_markdown(data, thresholds, metrics, group_label, threshold_bounds, enabled_sections=enabled_sections)
+    # Word 报告排除汇总数据
+    word_enabled = enabled_sections - {"summary"}
+    word_markdown = build_generic_report_markdown(data, thresholds, metrics, group_label, threshold_bounds, enabled_sections=word_enabled)
     detail_tables = build_generic_report_detail_tables(data, thresholds, metrics, threshold_bounds)
     details_xlsx = build_report_details_xlsx_bytes(detail_tables)
-    pdf_images, image_errors = build_generic_report_figure_images(data, thresholds, metrics, threshold_bounds)
+    pdf_images, image_errors = build_generic_report_figure_images(data, thresholds, metrics, threshold_bounds, enabled_sections=enabled_sections)
     docx_report = None
     docx_error = ""
     try:
-        docx_report = build_report_docx_bytes(markdown_report)
+        docx_report = build_report_docx_bytes(word_markdown)
     except RuntimeError as exc:
         docx_error = str(exc)
     pdf_report = None
