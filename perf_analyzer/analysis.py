@@ -126,6 +126,80 @@ def apply_stable_window(data: pd.DataFrame, warmup_minutes: float) -> pd.DataFra
     return pd.concat(frames, ignore_index=True) if frames else data.iloc[0:0].copy()
 
 
+def apply_advanced_filters(
+    data: pd.DataFrame,
+    time_range: tuple[pd.Timestamp, pd.Timestamp] | None = None,
+    metric_conditions: list[tuple[str, str, float]] | None = None,
+    metric_condition_logic: str = "AND",
+    categorical_filters: dict[str, list[str]] | None = None,
+    downsample_every_n: int | None = None,
+) -> pd.DataFrame:
+    """Apply time range, metric conditions, categorical filters, and downsampling.
+
+    Args:
+        data: Input DataFrame (already filtered by source + scene)
+        time_range: (start, end) inclusive time range, or None for all
+        metric_conditions: List of (metric_key, operator, value) tuples
+        metric_condition_logic: "AND" (all must match) or "OR" (any must match)
+        categorical_filters: Dict of {column_name: [allowed_values]}
+        downsample_every_n: If set, take every Nth row per (source, scene) group
+
+    Returns:
+        Filtered DataFrame
+    """
+    result = data.copy()
+
+    # Time range filter
+    if time_range is not None and "timestamp" in result:
+        start, end = time_range
+        if pd.notna(start) and pd.notna(end):
+            result = result[(result["timestamp"] >= start) & (result["timestamp"] <= end)]
+
+    # Metric condition filter
+    if metric_conditions:
+        valid_conditions = [(key, op, val) for key, op, val in metric_conditions if key in result.columns]
+        if valid_conditions:
+            masks = []
+            for key, op, val in valid_conditions:
+                series = pd.to_numeric(result[key], errors="coerce")
+                if op == ">":
+                    masks.append(series > val)
+                elif op == ">=":
+                    masks.append(series >= val)
+                elif op == "<":
+                    masks.append(series < val)
+                elif op == "<=":
+                    masks.append(series <= val)
+                elif op == "==":
+                    masks.append(series == val)
+                elif op == "!=":
+                    masks.append(series != val)
+            if metric_condition_logic == "AND":
+                combined = pd.Series(True, index=result.index)
+                for mask in masks:
+                    combined = combined & mask.fillna(False)
+            else:
+                combined = pd.Series(False, index=result.index)
+                for mask in masks:
+                    combined = combined | mask.fillna(False)
+            result = result[combined]
+
+    # Categorical column filter
+    if categorical_filters:
+        for column, allowed_values in categorical_filters.items():
+            if column in result.columns and allowed_values:
+                result = result[result[column].isin(allowed_values)]
+
+    # Downsampling (every Nth row per source+scene group)
+    if downsample_every_n is not None and downsample_every_n > 1:
+        frames = []
+        for _, group in result.groupby(["source", "scene"], sort=False):
+            frames.append(group.iloc[::downsample_every_n])
+        result = pd.concat(frames, ignore_index=True) if frames else result.iloc[0:0].copy()
+
+    return result
+
+
 def linear_slope_per_minute(group: pd.DataFrame, metric_key: str) -> tuple[float, float]:
     values = group[["timestamp", metric_key]].dropna().sort_values("timestamp")
     if len(values) < 3:

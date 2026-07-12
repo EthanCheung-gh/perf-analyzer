@@ -156,3 +156,27 @@ CONFIG_METRIC_KEYS = {
     "description",
     "_comment",
 }
+
+REPORT_SECTIONS = {
+    "conclusions": "测试结论",
+    "decision": "决策分析",
+    "release_gate": "发布门禁",
+    "stability": "稳定性评分",
+    "bottleneck": "瓶颈提示",
+    "summary": "汇总数据",
+    "alert_continuity": "告警持续性摘要",
+    "segments": "异常段",
+    "leak": "内存趋势检测",
+    "trend_slope": "全指标趋势斜率",
+    "efficiency": "资源效率",
+    "config_recommendation": "配置建议",
+}
+REPORT_SECTIONS_GENERIC = {
+    "conclusions": "分析结论",
+    "summary": "汇总数据",
+    "alert_continuity": "告警持续性摘要",
+    "segments": "异常段",
+    "trend_slope": "全指标趋势斜率",
+}
+REPORT_SECTIONS_ALWAYS = {"conclusions", "methodology"}
+FILTER_OPERATORS = (">", ">=", "<", "<=", "==", "!=")
