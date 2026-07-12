@@ -117,11 +117,15 @@ def max_continuous_alert_minutes(
     metric: Metric,
     thresholds: dict[str, float],
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    precomputed_mask: pd.Series | None = None,
 ) -> float:
     values = group[["timestamp", metric.key]].dropna().sort_values("timestamp")
     if values.empty:
         return 0.0
-    alerts = metric_alert_mask(values[metric.key], metric, thresholds, threshold_bounds).to_numpy()
+    if precomputed_mask is not None:
+        alerts = precomputed_mask.reindex(values.index, fill_value=False).to_numpy()
+    else:
+        alerts = metric_alert_mask(values[metric.key], metric, thresholds, threshold_bounds).to_numpy()
     if not alerts.any():
         return 0.0
 

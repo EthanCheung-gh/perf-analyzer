@@ -61,7 +61,7 @@ def summarize(
                 row[f"{metric.label}超阈次数"] = int(mask.sum())
                 row[f"{metric.label}超阈占比(%)"] = float(mask.mean() * 100)
                 row[f"{metric.label}正常区间/阈值"] = metric_alert_rule_text(metric, thresholds, threshold_bounds)
-                max_minutes = max_continuous_alert_minutes(group, metric, thresholds, threshold_bounds)
+                max_minutes = max_continuous_alert_minutes(group, metric, thresholds, threshold_bounds, precomputed_mask=mask)
                 row[f"{metric.label}最大连续超阈"] = format_duration(max_minutes)
         rows.append(row)
     return pd.DataFrame(rows)
