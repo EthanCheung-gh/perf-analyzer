@@ -539,13 +539,13 @@ def main() -> None:
             if config_table.empty:
                 config_table, config_notes = configuration_recommendation(
                     filtered_data,
-                    test_cpu_cores=8,
-                    target_cpu_utilization=70.0,
-                    minimum_cpu_cores=2,
-                    system_reserved_memory_gb=2.0,
-                    minimum_memory_gb=4,
-                    minimum_free_disk_gb=10,
-                    recommendation_factor=1.5,
+                    test_cpu_cores=st.session_state.get("config_test_cpu_cores", 8),
+                    target_cpu_utilization=st.session_state.get("config_target_cpu_utilization", 70.0),
+                    minimum_cpu_cores=st.session_state.get("config_minimum_cpu_cores", 2),
+                    system_reserved_memory_gb=st.session_state.get("config_reserved_memory_gb", 2.0),
+                    minimum_memory_gb=st.session_state.get("config_minimum_memory_gb", 4),
+                    minimum_free_disk_gb=st.session_state.get("config_minimum_free_disk_gb", 10),
+                    recommendation_factor=st.session_state.get("config_recommendation_factor", 1.5),
                     slope_threshold=slope_threshold,
                 )
             render_report(filtered_data, thresholds, slope_threshold, metrics, threshold_bounds, config_table, config_notes)
