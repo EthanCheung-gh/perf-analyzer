@@ -291,17 +291,17 @@ def main() -> None:
             time_max = data["timestamp"].max() if "timestamp" in data.columns and not data.empty else None
             if time_min is not None and time_max is not None and pd.notna(time_min) and pd.notna(time_max):
                 st.caption(f"数据时间范围：{time_min} 至 {time_max}")
-                time_start = st.date_input(
-                    "起始日期",
-                    value=time_min.date(),
+                time_start = st.datetime_input(
+                    "起始时间",
+                    value=time_min,
                     key="filter_time_start",
-                    help="选择分析数据的起始日期（含）。不影响原始 Excel。",
+                    help="选择分析数据的起始时间（含），精确到分钟。不影响原始 Excel。",
                 )
-                time_end = st.date_input(
-                    "结束日期",
-                    value=time_max.date(),
+                time_end = st.datetime_input(
+                    "结束时间",
+                    value=time_max,
                     key="filter_time_end",
-                    help="选择分析数据的结束日期（含）。",
+                    help="选择分析数据的结束时间（含），精确到分钟。",
                 )
             else:
                 st.caption("无可用时间范围。")
@@ -386,7 +386,7 @@ def main() -> None:
     time_end = st.session_state.get("filter_time_end")
     time_range = None
     if time_start is not None and time_end is not None:
-        time_range = (pd.Timestamp(time_start), pd.Timestamp(time_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+        time_range = (pd.Timestamp(time_start), pd.Timestamp(time_end))
 
     metric_conditions = []
     for i in range(3):
