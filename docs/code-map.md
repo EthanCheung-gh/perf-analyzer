@@ -88,8 +88,17 @@ flowchart TD
     Thresholds --> ConfigExport["build_settings_config() / build_config_template()"]
     Filters --> Filtered["filtered_data"]
 
-    Filtered --> BatchExport["build_batch_export_zip()"]
-    Filtered --> Tabs["Streamlit tabs"]
+    Filtered --> Advanced["apply_advanced_filters()"]
+    Advanced --> AdvancedUI["侧边栏高级筛选控件"]
+
+    AdvancedUI --> TimeRange["时间范围（分钟级）"]
+    AdvancedUI --> MetricConditions["指标条件（AND/OR）"]
+    AdvancedUI --> Categorical["分类列多选"]
+    AdvancedUI --> Downsample["采样降频（每N点）"]
+
+    Advanced --> FinalData["final_data"]
+    FinalData --> BatchExport["build_batch_export_zip()"]
+    FinalData --> Tabs["Streamlit tabs"]
     Tabs --> Views["render_* 视图"]
 ```
 
@@ -222,23 +231,27 @@ flowchart TD
 ```mermaid
 flowchart TD
     Data["filtered_data"] --> ReportView["views_report.py"]
-    ReportView --> Conclusions["report.build_conclusions()"]
-    ReportView --> Markdown["report.build_report_markdown()"]
-    ReportView --> GenericMarkdown["report.build_generic_report_markdown()"]
+    ReportView --> SectionSelect["报告章节 checkbox（st.form 批量提交）"]
+
+    SectionSelect --> Markdown["build_report_markdown(enabled_sections)"]
+    SectionSelect --> PdfSummary["build_report_pdf_summary_markdown(enabled_sections)"]
+    SectionSelect --> PdfImages["build_report_figure_images(enabled_sections)"]
+
     Markdown --> Html["report.build_report_html()"]
-    GenericMarkdown --> Html
-    Markdown --> Docx["report.build_report_docx_bytes()"]
-    GenericMarkdown --> Docx
-    Markdown --> Pdf["report.build_report_pdf_bytes()"]
-    GenericMarkdown --> Pdf
-    ReportView --> PdfImages["report.build_report_figure_images()"]
+    Markdown --> WordM["Word 专用 markdown（排除 summary）"]
+    WordM --> Docx["report.build_report_docx_bytes()"]
+
+    PdfSummary --> Pdf["report.build_report_pdf_bytes()"]
     PdfImages --> Pdf
+
     ReportView --> Details["report.build_report_details_xlsx_bytes()"]
+
     Markdown --> Zip["report.build_report_zip_bytes()"]
     Html --> Zip
     Docx --> Zip
     Pdf --> Zip
     Details --> Zip
+
     Html --> DownloadHtml["下载 HTML 报告"]
     Markdown --> DownloadMarkdown["下载 Markdown 报告"]
     Docx --> DownloadDocx["下载 Word 报告"]
@@ -275,13 +288,15 @@ flowchart TD
 
 | 模块 | 代表函数 | 说明 |
 |---|---|---|
-| `analysis.py` | `summarize()` | 按数据源和场景汇总各指标统计、超阈、趋势 |
+| `analysis.py` | `summarize()` / `_compute_metric_stats()` | 按数据源和场景汇总各指标统计、超阈、趋势 |
 | `analysis.py` | `apply_stable_window()` | 按数据源和场景排除前 N 分钟预热数据 |
+| `analysis.py` | `apply_advanced_filters()` | 时间范围、指标条件、分类列、降采样四维高级筛选 |
 | `analysis.py` | `leak_analysis()` / `trend_analysis()` | 线性趋势和疑似泄漏筛查 |
 | `analysis.py` | `resource_efficiency_analysis()` | 资源消耗归一化到吞吐或并发 |
 | `analysis.py` | `scene_decision_analysis()` / `release_gate_analysis()` | 风险评级和发布门禁 |
 | `analysis.py` | `capacity_estimation()` / `configuration_recommendation()` | 容量曲线和配置建议 |
 | `alerts.py` | `metric_alert_mask()` / `alert_segments()` | 指标异常点和连续异常段 |
+| `alerts.py` | `max_continuous_alert_minutes()` | 最大连续超阈时长（支持预计算 mask） |
 | `quality.py` | `timestamp_quality_summary()` / `metric_quality_summary()` | 时间与指标质量诊断 |
 | `metrics.py` | `discover_metrics()` / `metric_by_key()` | 标准指标和动态指标发现 |
 
@@ -300,5 +315,8 @@ flowchart LR
 - 新增可批量导出的图表：在对应 `views_*.py` 提供 Figure builder，再通过 `export_adapter.py` 注入 `export.py`。
 - 新增指标：优先扩展 `constants.py` 的标准指标和字段别名，动态指标规则放在 `metrics.py` / `utils.py`。
 - 新增配置项：同步更新 `config.py`、`ui_state.py`、示例 JSON 和 README。
+- 新增筛选维度：在 `analysis.py` 的 `apply_advanced_filters()` 中添加新参数，同时在 `app.py` 侧边栏添加对应控件。
+- 新增报告章节：在 `constants.py` 的 `REPORT_SECTIONS` / `REPORT_SECTIONS_GENERIC` 中添加条目，在 `report.py` 对应 `build_*` 函数中添加渲染块。
 - 调整数据读取：优先修改 `io.py` 和 `time_utils.py`，不要在视图层解析原始 Excel。
 - 调整分析口径：优先放入 `analysis.py`、`alerts.py` 或 `quality.py`，视图层只负责控件、展示和下载。
+- 导出趋势图参数：`export.py` 中的 `build_trend_figure` 调用需与 `views_trend.py` 签名一致（目前通过 `trend_band_mode`、`trend_show_rolling` 等参数传递）。
