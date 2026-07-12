@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from .constants import REPORT_SECTIONS, REPORT_SECTIONS_GENERIC
+
 
 def session_value(key: str, default: object) -> object:
     return st.session_state.get(key, default)
@@ -70,5 +72,16 @@ def build_ui_settings() -> dict:
             "selected_sources": session_value("selected_sources", []),
             "selected_groups": session_value("selected_scenes", []),
             "selected_trend_metrics": session_value("selected_trend_metrics", []),
+            "time_start": str(session_value("filter_time_start", "")),
+            "time_end": str(session_value("filter_time_end", "")),
+            "metric_condition_logic": session_value("filter_metric_logic", "AND"),
+            "downsample_enabled": session_value("filter_downsample_enabled", False),
+            "downsample_n": session_value("filter_downsample_n", 5),
+        },
+        "report": {
+            "sections": {
+                section_id: session_value(f"report_section_{section_id}", True)
+                for section_id in list(dict.fromkeys([*REPORT_SECTIONS, *REPORT_SECTIONS_GENERIC]))
+            },
         },
     }
