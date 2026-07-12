@@ -911,7 +911,7 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
     try:
         from reportlab.lib import colors
         from reportlab.lib.enums import TA_CENTER, TA_LEFT
-        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.pdfbase import pdfmetrics
@@ -1089,7 +1089,7 @@ def build_report_pdf_bytes(markdown_text: str, title: str | None = None, images:
 
     blocks = _markdown_blocks(markdown_text)
     report_title = title or next((str(block["text"]) for block in blocks if block["type"] == "heading" and block["level"] == 1), "分析报告")
-    page_size = landscape(A4)
+    page_size = A4
     output = io.BytesIO()
     doc = SimpleDocTemplate(
         output,
