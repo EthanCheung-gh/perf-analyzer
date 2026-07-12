@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from perf_analyzer.analysis import apply_stable_window, configuration_recommendation
+from perf_analyzer.analysis import apply_advanced_filters, apply_stable_window, configuration_recommendation
 from perf_analyzer.alerts import (
     format_duration,
     format_peak_offset,
@@ -28,9 +28,12 @@ from perf_analyzer.config import (
 )
 from perf_analyzer.constants import (
     ANALYSIS_MODES,
+    FILTER_OPERATORS,
     GENERIC_MODE,
     GENERIC_SAMPLE_FILE,
     MAPPING_FIELDS,
+    META_COLUMNS,
+    REPORT_SECTIONS,
     SAMPLE_FILE,
 )
 from perf_analyzer.data_loader import (
@@ -282,9 +285,139 @@ def main() -> None:
             help="生成一份带说明的可编辑模板，适合保存后手工调整字段、阈值、单位和图表默认项。",
         )
 
+        st.header("高级筛选")
+        with st.expander("时间范围与条件过滤", expanded=False):
+            time_min = data["timestamp"].min() if "timestamp" in data.columns and not data.empty else None
+            time_max = data["timestamp"].max() if "timestamp" in data.columns and not data.empty else None
+            if time_min is not None and time_max is not None and pd.notna(time_min) and pd.notna(time_max):
+                st.caption(f"数据时间范围：{time_min} 至 {time_max}")
+                time_start = st.date_input(
+                    "起始日期",
+                    value=time_min.date(),
+                    key="filter_time_start",
+                    help="选择分析数据的起始日期（含）。不影响原始 Excel。",
+                )
+                time_end = st.date_input(
+                    "结束日期",
+                    value=time_max.date(),
+                    key="filter_time_end",
+                    help="选择分析数据的结束日期（含）。",
+                )
+            else:
+                st.caption("无可用时间范围。")
+
+            st.markdown("**指标条件**")
+            metric_condition_logic = st.radio(
+                "条件组合",
+                ["AND", "OR"],
+                index=0,
+                horizontal=True,
+                key="filter_metric_logic",
+                help="AND=全部条件必须满足，OR=任一条件满足即保留该行。",
+            )
+            metric_keys_for_filter = [m.key for m in metrics if m.key in data.columns and not data[m.key].dropna().empty]
+            metric_labels_for_filter = {m.key: m.label for m in metrics}
+            for i in range(3):
+                cols = st.columns([3, 1, 2])
+                default_metric_key = "" if i > 0 else (metric_keys_for_filter[0] if metric_keys_for_filter else "")
+                metric_key = cols[0].selectbox(
+                    f"条件{i + 1}指标",
+                    [""] + metric_keys_for_filter,
+                    format_func=lambda k, labels=metric_labels_for_filter: labels.get(k, k) if k else "(无)",
+                    key=f"filter_metric_{i}",
+                    label_visibility="collapsed",
+                )
+                operator = cols[1].selectbox(
+                    f"条件{i + 1}运算符",
+                    list(FILTER_OPERATORS),
+                    key=f"filter_op_{i}",
+                    label_visibility="collapsed",
+                )
+                value = cols[2].number_input(
+                    f"条件{i + 1}值",
+                    value=0.0,
+                    key=f"filter_val_{i}",
+                    label_visibility="collapsed",
+                )
+
+            st.markdown("**分类列筛选**")
+            categorical_cols = [
+                col for col in data.columns
+                if col not in META_COLUMNS
+                and pd.api.types.is_object_dtype(data[col])
+                and col not in {m.key for m in metrics}
+                and data[col].nunique(dropna=False) <= 50
+            ]
+            for col in categorical_cols:
+                unique_vals = sorted([str(v) for v in data[col].dropna().unique() if str(v).strip()])
+                if unique_vals:
+                    st.multiselect(
+                        col,
+                        unique_vals,
+                        default=unique_vals,
+                        key=f"filter_cat_{col}",
+                        help=f"选择要保留的 {col} 值。默认全选。",
+                    )
+
+            st.markdown("**采样降频**")
+            downsample_enabled = st.checkbox(
+                "启用降采样",
+                value=False,
+                key="filter_downsample_enabled",
+                help="按每N个点降采样，减少数据量。仅在点数太多导致图表渲染慢时使用。",
+            )
+            if downsample_enabled:
+                st.number_input(
+                    "每N个点保留1个",
+                    min_value=2,
+                    max_value=1000,
+                    value=5,
+                    key="filter_downsample_n",
+                    help="每 N 个采样点保留第一个，适用于长周期数据。",
+                )
+
     filtered_data = data[data["source"].isin(selected_sources) & data["scene"].isin(selected_scenes)].copy()
     if filtered_data.empty:
         st.warning("当前筛选条件下没有数据。")
+        return
+
+    # Apply advanced filters (time range, metric conditions, categorical, downsampling)
+    time_start = st.session_state.get("filter_time_start")
+    time_end = st.session_state.get("filter_time_end")
+    time_range = None
+    if time_start is not None and time_end is not None:
+        time_range = (pd.Timestamp(time_start), pd.Timestamp(time_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+
+    metric_conditions = []
+    for i in range(3):
+        key = st.session_state.get(f"filter_metric_{i}", "")
+        if key:
+            op = st.session_state.get(f"filter_op_{i}", ">")
+            val = st.session_state.get(f"filter_val_{i}", 0.0)
+            metric_conditions.append((key, str(op), float(val)))
+
+    categorical_filters: dict[str, list[str]] = {}
+    for col in categorical_cols:
+        selected = st.session_state.get(f"filter_cat_{col}")
+        if selected is not None and isinstance(selected, list) and len(selected) > 0:
+            unique_all = set(str(v) for v in data[col].dropna().unique() if str(v).strip())
+            selected_set = set(str(v) for v in selected)
+            if selected_set != unique_all:
+                categorical_filters[col] = list(selected_set)
+
+    downsample_every_n = st.session_state.get("filter_downsample_n") if st.session_state.get("filter_downsample_enabled", False) else None
+
+    if time_range or metric_conditions or categorical_filters or downsample_every_n:
+        filtered_data = apply_advanced_filters(
+            filtered_data,
+            time_range=time_range,
+            metric_conditions=metric_conditions if metric_conditions else None,
+            metric_condition_logic=str(st.session_state.get("filter_metric_logic", "AND")),
+            categorical_filters=categorical_filters if categorical_filters else None,
+            downsample_every_n=downsample_every_n,
+        )
+    if filtered_data.empty:
+        st.warning("当前高级筛选条件下没有数据。")
         return
 
     with st.sidebar:
