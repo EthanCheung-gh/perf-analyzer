@@ -146,6 +146,7 @@ CONFIG_METRIC_KEYS = {
     "threshold",
     "threshold_label",
     "direction",
+    "scale",
     "lower_threshold",
     "upper_threshold",
     "lower",

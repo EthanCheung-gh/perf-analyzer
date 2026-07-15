@@ -171,6 +171,7 @@ def main() -> None:
         st.caption("核心指标使用内置默认阈值；动态扩展指标默认使用当前数据 P95。可导入 JSON 配置覆盖阈值和方向。")
         thresholds = {}
         threshold_bounds = {}
+        scales: dict[str, float] = {}
         configured_metrics = []
         metric_config_count = sum(1 for metric in metrics if metric_config_entry(imported_config, metric))
         with st.expander("阈值配置", expanded=not imported_config):
@@ -205,6 +206,25 @@ def main() -> None:
                         key=f"threshold_{metric.key}",
                         help="用于异常点、超阈次数、超阈占比、最大连续超阈和趋势图阈值线。不会修改原始数据。",
                     )
+                    uc, sc = st.columns([1, 1])
+                    new_unit = uc.text_input(
+                        "单位",
+                        value=configured_metric.unit,
+                        key=f"unit_{metric.key}",
+                        help="指标单位显示名，例如 MB/s、KB/s、个、% 等。只影响图表和报告展示。",
+                    )
+                    scale_val = sc.number_input(
+                        "缩放因子",
+                        min_value=0.000001,
+                        max_value=999999.0,
+                        value=1.0,
+                        step=0.1,
+                        format="%.4f",
+                        key=f"scale_{metric.key}",
+                        help="原始值乘以此系数后用于分析。例如数据是 bytes 想按 MB 看，填 0.0000009537 (1/1048576)。默认 1.0。",
+                    )
+                    configured_metric = replace(configured_metric, unit=new_unit)
+                    scales[metric.key] = scale_val
                 configured_metrics.append(configured_metric)
                 thresholds[metric.key] = threshold_value
                 threshold_bounds[metric.key] = (lower_bound, upper_bound)
@@ -258,6 +278,7 @@ def main() -> None:
             analysis_mode,
             group_label,
             build_ui_settings(),
+            scales=scales,
         )
         st.download_button(
             "导出当前分析配置",
@@ -276,6 +297,7 @@ def main() -> None:
             analysis_mode,
             group_label,
             build_ui_settings(),
+            scales=scales,
         )
         st.download_button(
             "下载配置模板 JSON",
@@ -416,6 +438,12 @@ def main() -> None:
             categorical_filters=categorical_filters if categorical_filters else None,
             downsample_every_n=downsample_every_n,
         )
+    # 应用缩放因子
+    for metric in metrics:
+        scale = scales.get(metric.key, 1.0)
+        if scale != 1.0 and metric.key in filtered_data.columns:
+            filtered_data[metric.key] = filtered_data[metric.key] * scale
+
     if filtered_data.empty:
         st.warning("当前高级筛选条件下没有数据。")
         return

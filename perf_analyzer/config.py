@@ -246,6 +246,7 @@ def build_settings_config(
     analysis_mode: str = PERFORMANCE_MODE,
     group_label: str = "场景",
     ui_settings: dict | None = None,
+    scales: dict[str, float] | None = None,
 ) -> dict:
     threshold_bounds = threshold_bounds or {}
     metric_settings = {}
@@ -257,6 +258,9 @@ def build_settings_config(
             "threshold": thresholds.get(metric.key, metric.default_threshold),
             "direction": "higher" if metric.higher_is_worse else "lower",
         }
+        scale = (scales or {}).get(metric.key)
+        if scale is not None and scale != 1.0:
+            setting["scale"] = scale
         lower, upper = threshold_bounds.get(metric.key, (None, None))
         if lower is not None:
             setting["lower_threshold"] = lower
@@ -288,6 +292,7 @@ def build_config_template(
     analysis_mode: str = PERFORMANCE_MODE,
     group_label: str = "场景",
     ui_settings: dict | None = None,
+    scales: dict[str, float] | None = None,
 ) -> dict:
     template = build_settings_config(
         field_aliases,
@@ -299,6 +304,7 @@ def build_config_template(
         analysis_mode,
         group_label,
         ui_settings,
+        scales=scales,
     )
     template["_comment"] = {
         "purpose": "这是一份按当前上传数据生成的可编辑配置模板，保存后可在侧边栏重新导入。",
