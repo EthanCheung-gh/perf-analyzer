@@ -29,6 +29,7 @@ def build_ui_settings() -> dict:
             "metric": session_value("version_compare_metric", ""),
             "baseline_source": session_value("version_compare_baseline_source", ""),
             "regression_threshold": session_value("version_regression_threshold", 15.0),
+            "scenes": session_value("version_compare_scenes", []),
         },
         "baseline_growth": {
             "baseline": session_value("baseline_growth_baseline", ""),

@@ -134,7 +134,18 @@ def render_leak_detection(data: pd.DataFrame, selected_scenes: list[str], slope_
 
 def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metrics: list[Metric]) -> None:
     st.subheader("多文件版本对比")
-    filtered = data[data["scene"].isin(selected_scenes)].copy()
+    # 版本对比页内独立的场景选择器，不依赖侧边栏全局分组
+    available_scenes = sorted(data["scene"].dropna().unique().tolist())
+    compare_scenes = st.multiselect(
+        "对比场景",
+        available_scenes,
+        default=available_scenes,
+        key="version_compare_scenes",
+        help="选择要参与版本对比的场景。默认全选（当前筛选范围内的全部分组）。",
+    )
+    if not compare_scenes:
+        compare_scenes = available_scenes
+    filtered = data[data["scene"].isin(compare_scenes)].copy()
     if filtered["source"].nunique() < 2:
         st.info("上传两个或更多 Excel 文件后，可在这里按数据源对比不同版本。")
         return
