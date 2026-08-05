@@ -148,6 +148,7 @@ http://localhost:8501
 
 - 滚动均值趋势：按每个数据源/场景分别计算滚动平均，用于过滤瞬时噪声，观察持续爬升或下降。
 - 上下限区间带：可以读取配置文件中的 `lower_threshold` / `upper_threshold`，也可以按当前筛选数据自动显示 P5-P95 参考区间。
+- 阶段化分析：自动把单个场景的指标曲线切分为 预热/稳定/压力 阶段，并在趋势图上叠加阶段边界，方便区分启动预热和稳定期结论。
 
 ### 3. 对比
 
@@ -256,6 +257,7 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 - 选择均值、峰值、P90、P95、P99、波动性或趋势斜率作为统计口径
 - 表格和分组柱状图展示
 - 选择基准数据源，按增长阈值自动判断是否退化
+- 统计显著性判定：对每个“场景 × 数据源”做 Mann-Whitney U 检验和 Cohen's d，区分“退化(显著)”与“退化(波动)”，P 值阈值和效应量阈值可配置
 - 版本退化热力图：按“场景 × 指标”展示相对基准的退化幅度
 
 这里的数据源名称来自上传文件名；使用示例数据时，数据源名为“示例数据”。
@@ -273,6 +275,7 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 - 计算失败率和每千请求错误数
 - 用柱状图对比不同场景或不同数据源的效率指标
 - 吞吐-资源散点图：横轴为平均吞吐，纵轴可切换 CPU、内存、响应时间、FPS、GC、失败率等指标
+- 分钟级归一化：按分钟分桶计算 CPU/吞吐 等瞬时资源成本，观察高负载时段单位成本是否恶化
 
 这个页面适合判断“资源上涨是否真的退化”。例如 CPU 变高但 QPS 增长更多时，单位吞吐 CPU 成本可能反而下降。
 
@@ -473,6 +476,7 @@ PDF 是图文摘要归档报告，只保留结论、门禁、Top 风险、关键
 | `analysis.group_label` | `analysis` | 页面里 sheet 分组的名称，例如场景、设备、工况、批次 |
 | `analysis.warmup_minutes` | `analysis` | 排除每个分组开头 N 分钟数据 |
 | `analysis.memory_leak_slope_threshold` | `analysis` | 性能模式内存疑似泄漏斜率阈值，单位 MB/分钟 |
+| `analysis.risk_rules` | `analysis` | 决策分析阈值集：超阈占比/连续超阈/失败率/响应时间/FPS 的告警与严重阈值、泄漏加分，缺失字段用默认值 |
 | `metrics.*.label` | `metrics` | 指标展示名 |
 | `metrics.*.unit` | `metrics` | 指标单位，用于图表和报告展示 |
 | `metrics.*.threshold` | `metrics` | 单阈值告警线；没有上下限时按它和 `direction` 判断异常 |
@@ -488,6 +492,8 @@ PDF 是图文摘要归档报告，只保留结论、门禁、Top 风险、关键
 | `ui.alerts.normalize_linked` | `ui.alerts` | 异常段联动图是否标准化显示 |
 | `ui.alerts.linked_metrics` | `ui.alerts` | 异常段联动图默认指标列表 |
 | `ui.version_compare.*` | `ui.version_compare` | 多版本对比指标、统计口径、基准数据源和退化阈值 |
+| `ui.version_compare.p_threshold` | `ui.version_compare` | 版本对比显著性 P 值阈值，默认 0.05 |
+| `ui.version_compare.effect_size_threshold` | `ui.version_compare` | 版本对比效应量阈值（\|Cohen's d\|），默认 0.2 |
 | `ui.baseline_growth.*` | `ui.baseline_growth` | 基准增长页的基准分组、统计口径和指标 |
 | `ui.distribution.*` | `ui.distribution` | 分布页指标、控制图指标和控制图分组 |
 | `ui.efficiency.*` | `ui.efficiency` | 资源效率页柱状图指标和散点图纵轴 |
@@ -814,6 +820,7 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 | `data/sample_resource_consumption.xlsx` | 示例 Excel 数据 |
 | `config/perf_analyzer_config.example.json` | 可导入的分析配置示例 |
 | `config/generic_timeseries_config.example.json` | 通用时序分析配置示例 |
+| `tests/` | pytest 测试：分析、告警、配置、显著性、阶段、分钟归一化 |
 
 ## 已实现扩展
 
@@ -844,6 +851,11 @@ CPU原始需求 = 8 × 56% / 70% = 6.4 核
 - 报告章节可选：每个章节独立 checkbox，选择随配置文件导入/导出
 - 报告图表随章节联动：PDF 和图表导出只包含被选中章节对应的可视化
 - 配置建议参数与报告联动：Tab 3 的配置参数自动传递到报告页，确保一致性
+- 决策规则可配置：风险评分、瓶颈提示、雷达图阈值集中到 `analysis.risk_rules`，随配置导入/导出
+- 版本对比统计显著性：Mann-Whitney U 检验 + Cohen's d，区分统计显著退化与波动
+- 分钟级归一化：按分钟分桶计算瞬时资源成本，观察高负载时段单位成本变化
+- 阶段化分析：自动切分 预热/稳定/压力 阶段并在趋势图上叠加边界
+- pytest 测试体系：覆盖分析、告警、配置、显著性、阶段检测和分钟归一化
 
 ## 后续分析维度建议
 

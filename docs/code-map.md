@@ -19,7 +19,10 @@
 - `perf_analyzer/io.py`：Excel 读取、字段识别、时间戳解析、通用时序归一化。
 - `perf_analyzer/metrics.py`：指标发现和指标查找。
 - `perf_analyzer/config.py`：配置导入、校验、阈值、UI 默认值、配置导出 JSON。
-- `perf_analyzer/analysis.py`：汇总、趋势、泄漏、效率、风险、容量、版本退化、配置建议等计算。
+- `perf_analyzer/analysis.py`：汇总、趋势、泄漏、效率、风险、容量、版本退化、配置建议等计算；决策 bundle 一次算齐。
+- `perf_analyzer/rules.py`：`RiskRules` 决策规则（风险评分/瓶颈/雷达阈值），支持配置导入导出。
+- `perf_analyzer/significance.py`：Mann-Whitney U、Cohen's d、bootstrap CI，版本对比显著性检验（纯 numpy）。
+- `perf_analyzer/phases.py`：预热/稳定/压力阶段自动切分与趋势叠加。
 - `perf_analyzer/alerts.py`：阈值判断、异常段、异常格式化。
 - `perf_analyzer/quality.py`：时间、指标、采样间隔质量摘要。
 - `perf_analyzer/report.py`：Markdown/HTML 报告内容生成。
@@ -293,10 +296,15 @@ flowchart TD
 | `analysis.py` | `apply_advanced_filters()` | 时间范围、指标条件、分类列、降采样四维高级筛选 |
 | `analysis.py` | `leak_analysis()` / `trend_analysis()` | 线性趋势和疑似泄漏筛查 |
 | `analysis.py` | `resource_efficiency_analysis()` | 资源消耗归一化到吞吐或并发 |
-| `analysis.py` | `scene_decision_analysis()` / `release_gate_analysis()` | 风险评级和发布门禁 |
+| `analysis.py` | `scene_decision_analysis()` / `release_gate_analysis()` | 风险评级和发布门禁（阈值来自 `RiskRules`） |
+| `analysis.py` | `compute_decision_bundle()` | 单次计算决策页全部表格（决策/稳定性/瓶颈/矩阵/雷达） |
+| `analysis.py` | `workload_efficiency_buckets()` | 按分钟分桶计算瞬时资源成本 |
 | `analysis.py` | `capacity_estimation()` / `configuration_recommendation()` | 容量曲线和配置建议 |
 | `alerts.py` | `metric_alert_mask()` / `alert_segments()` | 指标异常点和连续异常段 |
 | `alerts.py` | `max_continuous_alert_minutes()` | 最大连续超阈时长（支持预计算 mask） |
+| `rules.py` | `RiskRules` / `risk_rules_from_config()` | 决策分析可配置阈值集 |
+| `significance.py` | `significance_test()` / `mann_whitney_u()` / `cohens_d()` | 版本对比统计显著性 |
+| `phases.py` | `detect_phases()` / `phase_overlay_figure()` | 阶段切分与趋势叠加 |
 | `quality.py` | `timestamp_quality_summary()` / `metric_quality_summary()` | 时间与指标质量诊断 |
 | `metrics.py` | `discover_metrics()` / `metric_by_key()` | 标准指标和动态指标发现 |
 
