@@ -14,6 +14,7 @@ from .constants import (
     PERFORMANCE_MODE,
 )
 from .models import Metric
+from .rules import RiskRules, default_risk_rules, risk_rules_to_dict
 from .utils import dynamic_metric_label, parse_aliases
 
 
@@ -73,6 +74,17 @@ def validate_config(config: dict, metrics: list[Metric] | None = None) -> tuple[
         for key in ("memory_leak_slope_threshold", "warmup_minutes"):
             if key in analysis and optional_float(analysis.get(key)) is None:
                 warnings.append(f"analysis.{key} 不是数字，将使用默认值。")
+        risk_rules = analysis.get("risk_rules")
+        if risk_rules is not None and not isinstance(risk_rules, dict):
+            warnings.append("analysis.risk_rules 必须是对象，已忽略，使用默认规则。")
+        elif isinstance(risk_rules, dict):
+            known_rule_fields = {field.name for field in RiskRules.__dataclass_fields__.values()}
+            unknown_rule_fields = sorted(set(risk_rules) - known_rule_fields)
+            if unknown_rule_fields:
+                warnings.append(f"analysis.risk_rules 中未知字段将被忽略：{', '.join(unknown_rule_fields)}。")
+            for key in sorted(set(risk_rules) & known_rule_fields):
+                if optional_float(risk_rules.get(key)) is None:
+                    warnings.append(f"analysis.risk_rules.{key} 不是数字，将使用默认值。")
 
     ui = config.get("ui", {})
     if ui and not isinstance(ui, dict):
@@ -276,6 +288,7 @@ def build_settings_config(
             "group_label": group_label,
             "memory_leak_slope_threshold": slope_threshold,
             "warmup_minutes": warmup_minutes,
+            "risk_rules": risk_rules_to_dict(default_risk_rules()),
         },
         "metrics": metric_settings,
         "ui": ui_settings or {},

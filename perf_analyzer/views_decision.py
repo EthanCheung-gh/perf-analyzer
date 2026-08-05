@@ -6,14 +6,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from .analysis import (
-    bottleneck_hints,
     capacity_estimation,
-    radar_profile_data,
+    compute_decision_bundle,
     release_gate_analysis,
     resource_efficiency_analysis,
-    risk_matrix_data,
-    scene_decision_analysis,
-    stability_score_analysis,
+    workload_efficiency_bucket_summary,
+    workload_efficiency_buckets,
 )
 from .config import config_ui_bool, config_ui_choice, config_ui_float, config_ui_int, config_ui_value
 from .models import Metric
@@ -97,6 +95,41 @@ def render_efficiency(data: pd.DataFrame, selected_scenes: list[str]) -> None:
         scatter.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
         render_plotly_chart(scatter, f"吞吐资源散点_{scatter_y}")
 
+    st.markdown("**分钟级归一化（瞬时成本）**")
+    buckets = workload_efficiency_buckets(filtered)
+    if buckets.empty:
+        st.info("缺少吞吐字段（QPS/TPS/任务数/请求数），无法做分钟级归一化。")
+        return
+    with st.expander("口径说明", expanded=False):
+        st.write("- 场景级平均成本会掩盖负载波动：瞬时成本按分钟分桶计算，能看出高负载时段单位成本是否恶化。")
+        st.write("- 瞬时成本 P95 明显高于中位值时，说明部分时段资源效率较差。")
+    bucket_summary = workload_efficiency_bucket_summary(buckets)
+    st.dataframe(bucket_summary, use_container_width=True, hide_index=True)
+
+    bucket_chart_data = buckets.copy()
+    bucket_chart_data["场景标识"] = bucket_chart_data["数据源"].astype(str) + " / " + bucket_chart_data["场景"].astype(str)
+    bucket_cost_options = [column for column in ["CPU成本", "内存/并发(MB)"] if column in bucket_chart_data and bucket_chart_data[column].notna().any()]
+    if bucket_cost_options:
+        sanitize_select_state("efficiency_bucket_cost", bucket_cost_options)
+        bucket_cost_default = config_ui_choice(imported_config, "efficiency", "bucket_cost", bucket_cost_options, bucket_cost_options[0])
+        bucket_cost = st.selectbox(
+            "瞬时成本指标",
+            bucket_cost_options,
+            index=safe_option_index(bucket_cost_options, bucket_cost_default),
+            key="efficiency_bucket_cost",
+            help="CPU成本 = 分桶平均CPU / 分桶平均吞吐；内存/并发 = 分桶内存峰值 / 分桶平均并发。",
+        )
+        cost_fig = px.line(
+            bucket_chart_data.dropna(subset=[bucket_cost]),
+            x="时间桶",
+            y=bucket_cost,
+            color="场景标识",
+            markers=True,
+            title=f"{bucket_cost} 时间线",
+        )
+        cost_fig.update_layout(height=420, margin=dict(l=20, r=20, t=50, b=20))
+        render_plotly_chart(cost_fig, f"分钟级归一化_{bucket_cost}")
+
 
 def render_decision(
     data: pd.DataFrame,
@@ -117,14 +150,15 @@ def render_decision(
         st.write("- 发布门禁用于把风险评级转换成通过/不通过，适合发版检查或测试准入。")
         st.write("- 容量估算是基于当前样本的单位资源成本做线性外推，正式配置结论仍需要目标机器实测。")
 
-    decisions = scene_decision_analysis(filtered, thresholds, metrics, slope_threshold, threshold_bounds)
+    bundle = compute_decision_bundle(filtered, thresholds, metrics, slope_threshold, threshold_bounds)
+    decisions = bundle.decisions
     st.markdown("**场景风险评级**")
     if decisions.empty:
         st.info("没有可用于风险评级的数据。")
         return
     st.dataframe(decisions, use_container_width=True, hide_index=True)
 
-    matrix = risk_matrix_data(decisions)
+    matrix = bundle.matrix
     if not matrix.empty:
         st.markdown("**风险矩阵**")
         matrix_pivot = matrix.pivot(index="场景标识", columns="风险项", values="风险分").fillna(0)
@@ -144,7 +178,7 @@ def render_decision(
         risk_fig.update_layout(title="场景风险矩阵", height=360, margin=dict(l=20, r=20, t=50, b=20))
         render_plotly_chart(risk_fig, "场景风险矩阵")
 
-    radar_data = radar_profile_data(filtered, decisions, thresholds)
+    radar_data = bundle.radar
     if not radar_data.empty:
         st.markdown("**风险雷达图**")
         scene_options = list(radar_data["场景标识"].drop_duplicates())
@@ -210,11 +244,11 @@ def render_decision(
     st.dataframe(gate_rules, use_container_width=True, hide_index=True)
 
     st.markdown("**稳定性评分**")
-    stability = stability_score_analysis(decisions)
+    stability = bundle.stability
     st.dataframe(stability, use_container_width=True, hide_index=True)
 
     st.markdown("**瓶颈提示**")
-    bottlenecks = bottleneck_hints(filtered, thresholds, metrics)
+    bottlenecks = bundle.bottlenecks
     st.dataframe(bottlenecks, use_container_width=True, hide_index=True)
 
     st.markdown("**容量估算**")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from streamlit import cache_data
 
 from .models import Metric
 
@@ -146,6 +147,7 @@ def max_continuous_alert_minutes(
     return float(max_minutes)
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def alert_segments(
     data: pd.DataFrame,
     thresholds: dict[str, float],

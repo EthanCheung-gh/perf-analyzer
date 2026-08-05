@@ -8,6 +8,7 @@ import streamlit as st
 from .config import config_ui_bool, config_ui_choice, config_ui_float, config_ui_int
 from .metrics import metric_by_key
 from .models import Metric
+from .phases import detect_phases, phase_overlay_figure
 from .stats import percentile
 from .time_utils import rolling_points_for_group
 from .ui_helpers import render_plotly_chart, with_display_label
@@ -184,3 +185,45 @@ def render_trend(
             float(rolling_time_seconds),
         )
         render_plotly_chart(fig, f"趋势_{metric.label}")
+
+    st.markdown("**阶段化分析**")
+    with st.expander("自动切分 预热/稳定/压力 阶段", expanded=False):
+        st.caption("基于指标曲线自动检测阶段边界，把启动预热、稳定运行和压力峰值分开看。")
+        phase_scene_options = list(filtered["display_scene"].drop_duplicates())
+        phase_metric_options = [m for m in metrics if m.key in filtered and filtered[m.key].notna().any()]
+        if not phase_scene_options or not phase_metric_options:
+            st.info("当前筛选范围内没有可用于阶段分析的数据。")
+        else:
+            phase_scene_label = st.selectbox("阶段分析场景", phase_scene_options, key="phase_scene")
+            phase_metric_key = st.selectbox(
+                "阶段分析指标",
+                [m.key for m in phase_metric_options],
+                format_func=lambda key: metric_by_key(metrics, key).label,
+                key="phase_metric",
+            )
+            phase_metric = metric_by_key(metrics, phase_metric_key)
+            row0 = filtered[filtered["display_scene"] == phase_scene_label].iloc[0]
+            source = str(row0["source"])
+            scene = str(row0["scene"])
+            single = filtered[(filtered["source"] == source) & (filtered["scene"] == scene)].sort_values("timestamp")
+            phase_fig = go.Figure()
+            phase_fig.add_trace(
+                go.Scatter(
+                    x=single["timestamp"],
+                    y=single[phase_metric_key],
+                    mode="lines",
+                    name=phase_metric.label,
+                    line=dict(color="#2563eb"),
+                )
+            )
+            phase_fig, phases = phase_overlay_figure(single, source, scene, phase_metric_key, phase_fig)
+            if phases.empty:
+                st.info("当前数据不足，无法做阶段切分。")
+            else:
+                phase_fig.update_layout(
+                    height=360,
+                    title=f"{phase_scene_label} {phase_metric.label}阶段划分",
+                    margin=dict(l=20, r=20, t=50, b=20),
+                )
+                render_plotly_chart(phase_fig, f"阶段划分_{phase_scene_label}_{phase_metric_key}")
+                st.dataframe(phases, use_container_width=True, hide_index=True)

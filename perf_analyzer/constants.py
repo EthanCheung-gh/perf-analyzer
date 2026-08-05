@@ -123,7 +123,7 @@ SEMANTIC_METRICS = [
 STANDARD_METRICS = [*CORE_METRICS, *SEMANTIC_METRICS]
 META_COLUMNS = {"timestamp", "source", "scene", "display_scene"}
 CONFIG_TOP_LEVEL_KEYS = {"version", "mode", "fields", "analysis", "metrics", "ui", "notes", "description", "_comment"}
-CONFIG_ANALYSIS_KEYS = {"mode", "group_label", "memory_leak_slope_threshold", "warmup_minutes", "notes", "description", "_comment"}
+CONFIG_ANALYSIS_KEYS = {"mode", "group_label", "memory_leak_slope_threshold", "warmup_minutes", "risk_rules", "notes", "description", "_comment"}
 CONFIG_UI_SECTIONS = {
     "trend",
     "alerts",

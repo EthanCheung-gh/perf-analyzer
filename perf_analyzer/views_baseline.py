@@ -10,6 +10,7 @@ from .analysis import leak_analysis, metric_stats, trend_analysis, version_regre
 from .config import config_ui_choice, config_ui_float
 from .metrics import metric_by_key
 from .models import Metric
+from .significance import significance_test
 from .ui_helpers import render_plotly_chart, safe_option_index, sanitize_select_state, with_display_label
 
 
@@ -201,13 +202,33 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
         key="version_compare_baseline_source",
         help="选择作为基准版本或基准批次的数据源。其他数据源会和它逐场景比较。",
     )
-    regression_threshold = st.number_input(
+    col_r1, col_r2, col_r3 = st.columns(3)
+    regression_threshold = col_r1.number_input(
         "退化判定阈值(%)",
         min_value=0.0,
         value=config_ui_float(imported_config, "version_compare", "regression_threshold", 15.0),
         step=5.0,
         key="version_regression_threshold",
         help="相对基准的变化超过该比例时标记为退化。对于 FPS、QPS 等越低越差的指标，会按下降幅度判断。",
+    )
+    p_threshold = col_r2.number_input(
+        "显著性P值阈值",
+        min_value=0.001,
+        max_value=0.5,
+        value=config_ui_float(imported_config, "version_compare", "p_threshold", 0.05),
+        step=0.01,
+        format="%.3f",
+        key="version_compare_p_threshold",
+        help="Mann-Whitney U 检验的 P 值阈值。P 值低于该值且效应量足够大时，才判定为统计显著退化。",
+    )
+    effect_threshold = col_r3.number_input(
+        "效应量阈值(|Cohen's d|)",
+        min_value=0.0,
+        max_value=2.0,
+        value=config_ui_float(imported_config, "version_compare", "effect_size_threshold", 0.2),
+        step=0.1,
+        key="version_compare_effect_threshold",
+        help="|Cohen's d| 低于该值时认为差异过小，即使 P 值显著也不算实际退化。",
     )
 
     pivot = stats.pivot(index="scene", columns="source", values=column).reset_index()
@@ -223,14 +244,55 @@ def render_version_compare(data: pd.DataFrame, selected_scenes: list[str], metri
             np.nan,
             (regression["当前值"] - regression["基准值"]) / regression["基准值"] * 100,
         )
+        # 逐场景对原始采样值做显著性检验（当前数据源 vs 基准数据源）
+        significance_rows = []
+        for _, row in regression.iterrows():
+            current_values = filtered.loc[
+                (filtered["source"] == row["数据源"]) & (filtered["scene"] == row["scene"]), metric_key
+            ].to_numpy(dtype=float)
+            baseline_values_raw = filtered.loc[
+                (filtered["source"] == baseline_source) & (filtered["scene"] == row["scene"]), metric_key
+            ].to_numpy(dtype=float)
+            significance_rows.append(
+                significance_test(current_values, baseline_values_raw, p_threshold=p_threshold, effect_threshold=effect_threshold)
+            )
+        sig_df = pd.DataFrame(significance_rows).rename(
+            columns={
+                "n1": "样本数A",
+                "n2": "样本数B",
+                "p_value": "P值",
+                "cohens_d": "Cohen's d",
+                "verdict": "显著性",
+            }
+        )
+        regression = pd.concat([regression.reset_index(drop=True), sig_df], axis=1)
+
         if metric.higher_is_worse:
-            regression["判断"] = np.where(regression["增长率(%)"] > regression_threshold, "退化", "通过")
+            ratio_degraded = regression["增长率(%)"] > regression_threshold
         else:
-            regression["判断"] = np.where(regression["增长率(%)"] < -regression_threshold, "退化", "通过")
+            ratio_degraded = regression["增长率(%)"] < -regression_threshold
+        regression["判断"] = "通过"
+        regression.loc[ratio_degraded & (regression["verdict"] == "显著"), "判断"] = "退化(显著)"
+        regression.loc[ratio_degraded & (regression["verdict"] == "不显著"), "判断"] = "退化(波动)"
         regression.loc[regression["增长率(%)"].isna(), "判断"] = "基准不足"
         st.markdown("**退化判定**")
         st.dataframe(
-            regression[["scene", "基准数据源", "数据源", "基准值", "当前值", "增长率(%)", "判断"]].rename(columns={"scene": "场景"}),
+            regression[
+                [
+                    "scene",
+                    "基准数据源",
+                    "数据源",
+                    "基准值",
+                    "当前值",
+                    "增长率(%)",
+                    "样本数A",
+                    "样本数B",
+                    "P值",
+                    "Cohen's d",
+                    "显著性",
+                    "判断",
+                ]
+            ].rename(columns={"scene": "场景"}),
             use_container_width=True,
             hide_index=True,
         )

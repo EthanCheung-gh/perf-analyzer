@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
+from streamlit import cache_data
 
 from .alerts import (
     format_duration,
@@ -13,6 +16,19 @@ from .alerts import (
     metric_alert_rule_text,
 )
 from .models import Metric
+from .rules import (
+    BOTTLENECK_CPU_FACTOR,
+    BOTTLENECK_IO_FACTOR,
+    BOTTLENECK_MEMORY_FACTOR,
+    BOTTLENECK_NETWORK_KBPS,
+    BOTTLENECK_RESPONSE_MS,
+    RADAR_FAILURE_RATE,
+    RADAR_FPS_SLACK,
+    RADAR_FPS_TARGET,
+    RADAR_RESPONSE_MS,
+    RiskRules,
+    default_risk_rules,
+)
 from .stats import coefficient_of_variation, iqr, percentile, percentile_95
 
 
@@ -39,6 +55,7 @@ def _compute_metric_stats(
     return result
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def summarize(
     data: pd.DataFrame,
     thresholds: dict[str, float],
@@ -90,6 +107,7 @@ def summarize(
     return pd.DataFrame(rows)
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def metric_stats(data: pd.DataFrame, group_cols: list[str], metrics: list[Metric]) -> pd.DataFrame:
     rows = []
     for group_key, group in data.groupby(group_cols, sort=False):
@@ -216,6 +234,7 @@ def linear_slope_per_minute(group: pd.DataFrame, metric_key: str) -> tuple[float
     return float(slope), r2
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def leak_analysis(data: pd.DataFrame, slope_threshold: float) -> pd.DataFrame:
     rows = []
     for (source, scene), group in data.groupby(["source", "scene"], sort=False):
@@ -246,6 +265,7 @@ def leak_analysis(data: pd.DataFrame, slope_threshold: float) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def trend_analysis(data: pd.DataFrame, metrics: list[Metric]) -> pd.DataFrame:
     rows = []
     for (source, scene), group in data.groupby(["source", "scene"], sort=False):
@@ -333,6 +353,7 @@ def safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator / denominator)
 
 
+@cache_data(show_spinner=False, max_entries=32)
 def resource_efficiency_analysis(data: pd.DataFrame) -> pd.DataFrame:
     throughput_key = first_available_metric(data, ("qps", "tps", "task_count", "request_count"))
     rows = []
@@ -392,6 +413,79 @@ def resource_efficiency_analysis(data: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def workload_efficiency_buckets(
+    data: pd.DataFrame,
+    throughput_key: str | None = None,
+    bucket_minutes: float = 1.0,
+) -> pd.DataFrame:
+    """按时间分桶计算单位吞吐/并发的瞬时资源成本。
+
+    场景级平均值会掩盖"高负载时段单位成本是否恶化"；分桶后可以看到瞬时成本分布。
+
+    Returns:
+        列：数据源, 场景, 时间桶, 样本数, 平均吞吐, 平均CPU, CPU成本,
+            内存峰值(MB), 平均并发, 内存/并发(MB), 响应P95(ms)
+    """
+    if data.empty or "timestamp" not in data:
+        return pd.DataFrame()
+    if throughput_key is None:
+        throughput_key = first_available_metric(data, ("qps", "tps", "task_count", "request_count"))
+    if throughput_key is None:
+        return pd.DataFrame()
+
+    bucket_seconds = max(1, int(round(bucket_minutes * 60)))
+    frames = []
+    for (source, scene), group in data.groupby(["source", "scene"], sort=False):
+        group = group.sort_values("timestamp")
+        bucket = group["timestamp"].dt.floor(f"{bucket_seconds}s")
+        agg: dict[str, tuple[str, str | object]] = {
+            "样本数": ("timestamp", "count"),
+            "平均吞吐": (throughput_key, "mean"),
+        }
+        if "cpu_percent" in group:
+            agg["平均CPU"] = ("cpu_percent", "mean")
+        if "memory_mb" in group:
+            agg["内存峰值"] = ("memory_mb", "max")
+        if "concurrency" in group:
+            agg["平均并发"] = ("concurrency", "mean")
+        if "response_time_ms" in group:
+            agg["响应P95"] = ("response_time_ms", lambda s: percentile_95(s))
+        grouped = group.groupby(bucket).agg(**agg).reset_index()
+        grouped.rename(columns={grouped.columns[0]: "时间桶"}, inplace=True)
+        grouped["CPU成本"] = np.where(grouped["平均吞吐"] > 0, grouped["平均CPU"] / grouped["平均吞吐"], np.nan)
+        if "内存峰值" in grouped and "平均并发" in grouped:
+            grouped["内存/并发(MB)"] = np.where(grouped["平均并发"] > 0, grouped["内存峰值"] / grouped["平均并发"], np.nan)
+        grouped.insert(0, "数据源", source)
+        grouped.insert(1, "场景", scene)
+        frames.append(grouped)
+    result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if result.empty:
+        return result
+    return result.sort_values(["数据源", "场景", "时间桶"])
+
+
+def workload_efficiency_bucket_summary(buckets: pd.DataFrame) -> pd.DataFrame:
+    """汇总瞬时成本分布：中位 / P95 / 峰值 / 桶数，用于判断成本波动是否明显。"""
+    if buckets.empty or "CPU成本" not in buckets:
+        return pd.DataFrame()
+    rows = []
+    for (source, scene), group in buckets.groupby(["数据源", "场景"], sort=False):
+        costs = group["CPU成本"].dropna()
+        if costs.empty:
+            continue
+        rows.append(
+            {
+                "数据源": source,
+                "场景": scene,
+                "样本桶数": len(group),
+                "瞬时成本中位": percentile(costs, 0.5),
+                "瞬时成本P95": percentile_95(costs),
+                "瞬时成本峰值": float(costs.max()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def value_score(value: float, warning: float, critical: float, higher_is_worse: bool = True) -> int:
     if pd.isna(value):
         return 0
@@ -422,10 +516,18 @@ def scene_decision_analysis(
     metrics: list[Metric],
     slope_threshold: float,
     threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    rules: RiskRules | None = None,
+    alerts: pd.DataFrame | None = None,
+    leaks: pd.DataFrame | None = None,
+    efficiency: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    alerts = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
-    leaks = leak_analysis(data, slope_threshold)
-    efficiency = resource_efficiency_analysis(data)
+    rules = rules or default_risk_rules()
+    if alerts is None:
+        alerts = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
+    if leaks is None:
+        leaks = leak_analysis(data, slope_threshold)
+    if efficiency is None:
+        efficiency = resource_efficiency_analysis(data)
     rows = []
     for (source, scene), _group in data.groupby(["source", "scene"], sort=False):
         reasons = []
@@ -435,11 +537,11 @@ def scene_decision_analysis(
         if not scene_alerts.empty:
             max_alert_ratio = float(scene_alerts["超阈占比(%)"].max())
             max_alert_minutes = float(scene_alerts["最大连续超阈(分钟)"].max())
-            score += value_score(max_alert_ratio, 5, 20)
-            score += value_score(max_alert_minutes, 1, 5)
-            if max_alert_ratio >= 5:
+            score += value_score(max_alert_ratio, rules.alert_ratio_warning, rules.alert_ratio_critical)
+            score += value_score(max_alert_minutes, rules.alert_minutes_warning, rules.alert_minutes_critical)
+            if max_alert_ratio >= rules.alert_ratio_warning:
                 reasons.append(f"超阈占比最高 {max_alert_ratio:.1f}%")
-            if max_alert_minutes >= 1:
+            if max_alert_minutes >= rules.alert_minutes_warning:
                 reasons.append(f"最长连续超阈 {format_duration(max_alert_minutes)}")
         else:
             max_alert_ratio = 0.0
@@ -448,10 +550,10 @@ def scene_decision_analysis(
         leak_row = leaks[(leaks["数据源"] == source) & (leaks["场景"] == scene)] if not leaks.empty else pd.DataFrame()
         leak_result = leak_row["判断"].iloc[0] if not leak_row.empty else "数据不足"
         if leak_result == "疑似泄漏":
-            score += 3
+            score += rules.leak_score
             reasons.append("疑似内存泄漏")
         elif leak_result == "轻微增长":
-            score += 1
+            score += rules.minor_leak_score
 
         efficiency_row = efficiency[(efficiency["数据源"] == source) & (efficiency["场景"] == scene)] if not efficiency.empty else pd.DataFrame()
         failure_rate = efficiency_row["失败率(%)"].iloc[0] if not efficiency_row.empty else np.nan
@@ -459,15 +561,15 @@ def scene_decision_analysis(
         fps_p95 = efficiency_row["FPS P95"].iloc[0] if not efficiency_row.empty else np.nan
         error_per_thousand = efficiency_row["每千请求错误数"].iloc[0] if not efficiency_row.empty else np.nan
 
-        score += value_score(failure_rate, 0.1, 1.0)
-        score += value_score(error_per_thousand, 1.0, 10.0)
-        score += value_score(response_p95, 500, 1000)
-        score += value_score(fps_p95, 45, 30, higher_is_worse=False)
-        if not pd.isna(failure_rate) and failure_rate >= 0.1:
+        score += value_score(failure_rate, rules.failure_rate_warning, rules.failure_rate_critical)
+        score += value_score(error_per_thousand, rules.error_per_thousand_warning, rules.error_per_thousand_critical)
+        score += value_score(response_p95, rules.response_ms_warning, rules.response_ms_critical)
+        score += value_score(fps_p95, rules.fps_warning, rules.fps_critical, higher_is_worse=False)
+        if not pd.isna(failure_rate) and failure_rate >= rules.failure_rate_warning:
             reasons.append(f"失败率 {failure_rate:.2f}%")
-        if not pd.isna(response_p95) and response_p95 >= 500:
+        if not pd.isna(response_p95) and response_p95 >= rules.response_ms_warning:
             reasons.append(f"响应时间P95 {response_p95:.0f}ms")
-        if not pd.isna(fps_p95) and fps_p95 <= 45:
+        if not pd.isna(fps_p95) and fps_p95 <= rules.fps_warning:
             reasons.append(f"FPS P95 {fps_p95:.1f}")
 
         rows.append(
@@ -614,19 +716,19 @@ def bottleneck_hints(data: pd.DataFrame, thresholds: dict[str, float], metrics: 
         if "failed_requests" in group and "request_count" in group:
             failure_rate = safe_ratio(group["failed_requests"].sum(), group["request_count"].sum()) * 100
 
-        if not pd.isna(cpu_p95) and cpu_p95 >= thresholds.get("cpu_percent", 80) * 0.9:
+        if not pd.isna(cpu_p95) and cpu_p95 >= thresholds.get("cpu_percent", 80) * BOTTLENECK_CPU_FACTOR:
             hints.append("CPU压力")
-        if not pd.isna(memory_p95) and memory_p95 >= thresholds.get("memory_percent", 70) * 0.9:
+        if not pd.isna(memory_p95) and memory_p95 >= thresholds.get("memory_percent", 70) * BOTTLENECK_MEMORY_FACTOR:
             hints.append("内存压力")
-        if not pd.isna(io_p95) and io_p95 >= thresholds.get("io", 8) * 0.9:
+        if not pd.isna(io_p95) and io_p95 >= thresholds.get("io", 8) * BOTTLENECK_IO_FACTOR:
             hints.append("IO压力")
-        if ("network_up_kbps" in group or "network_down_kbps" in group) and not pd.isna(response_p95) and response_p95 >= 500:
+        if ("network_up_kbps" in group or "network_down_kbps" in group) and not pd.isna(response_p95) and response_p95 >= BOTTLENECK_RESPONSE_MS:
             network_total = (group["network_up_kbps"].mean() if "network_up_kbps" in group else 0) + (group["network_down_kbps"].mean() if "network_down_kbps" in group else 0)
-            if network_total > 1024:
+            if network_total > BOTTLENECK_NETWORK_KBPS:
                 hints.append("网络压力")
         if not pd.isna(failure_rate) and failure_rate > 0:
             hints.append("业务错误/重试")
-        if not pd.isna(response_p95) and response_p95 >= 500 and not hints:
+        if not pd.isna(response_p95) and response_p95 >= BOTTLENECK_RESPONSE_MS and not hints:
             hints.append("响应慢但资源瓶颈不明显")
 
         rows.append(
@@ -716,9 +818,9 @@ def radar_profile_data(data: pd.DataFrame, decisions: pd.DataFrame, thresholds: 
             "CPU压力": min(100, safe_ratio(cpu_p95, thresholds.get("cpu_percent", 80)) * 100),
             "内存压力": min(100, safe_ratio(memory_pct_p95, thresholds.get("memory_percent", 70)) * 100),
             "IO压力": min(100, safe_ratio(io_p95, thresholds.get("io", 8)) * 100),
-            "响应风险": min(100, safe_ratio(response_p95, 1000) * 100),
-            "错误风险": min(100, safe_ratio(failure_rate, 1.0) * 100),
-            "流畅风险": min(100, max(0, safe_ratio(60 - fps_p95, 30) * 100) if not pd.isna(fps_p95) else np.nan),
+            "响应风险": min(100, safe_ratio(response_p95, RADAR_RESPONSE_MS) * 100),
+            "错误风险": min(100, safe_ratio(failure_rate, RADAR_FAILURE_RATE) * 100),
+            "流畅风险": min(100, max(0, safe_ratio(RADAR_FPS_TARGET - fps_p95, RADAR_FPS_SLACK) * 100) if not pd.isna(fps_p95) else np.nan),
             "稳定风险": min(100, decision.get("风险评分", 0) * 10),
         }
         for dimension, value in profile.items():
@@ -730,6 +832,60 @@ def radar_profile_data(data: pd.DataFrame, decisions: pd.DataFrame, thresholds: 
                 }
             )
     return pd.DataFrame(rows)
+
+
+@dataclass
+class DecisionBundle:
+    """一次计算产出决策页所有表格，避免多个视图重复跑同一批分析。"""
+
+    decisions: pd.DataFrame
+    stability: pd.DataFrame
+    bottlenecks: pd.DataFrame
+    matrix: pd.DataFrame
+    radar: pd.DataFrame
+    alerts: pd.DataFrame
+    leaks: pd.DataFrame
+    efficiency: pd.DataFrame
+
+
+@cache_data(show_spinner=False, max_entries=32)
+def compute_decision_bundle(
+    data: pd.DataFrame,
+    thresholds: dict[str, float],
+    metrics: list[Metric],
+    slope_threshold: float,
+    threshold_bounds: dict[str, tuple[float | None, float | None]] | None = None,
+    rules: RiskRules | None = None,
+) -> DecisionBundle:
+    """单次遍历计算决策页依赖的全部表格（告警持续性、泄漏、效率、风险、门禁、瓶颈、雷达）。"""
+    alerts = alert_continuity_summary(data, thresholds, metrics, threshold_bounds)
+    leaks = leak_analysis(data, slope_threshold)
+    efficiency = resource_efficiency_analysis(data)
+    decisions = scene_decision_analysis(
+        data,
+        thresholds,
+        metrics,
+        slope_threshold,
+        threshold_bounds,
+        rules=rules,
+        alerts=alerts,
+        leaks=leaks,
+        efficiency=efficiency,
+    )
+    stability = stability_score_analysis(decisions)
+    bottlenecks = bottleneck_hints(data, thresholds, metrics)
+    matrix = risk_matrix_data(decisions)
+    radar = radar_profile_data(data, decisions, thresholds)
+    return DecisionBundle(
+        decisions=decisions,
+        stability=stability,
+        bottlenecks=bottlenecks,
+        matrix=matrix,
+        radar=radar,
+        alerts=alerts,
+        leaks=leaks,
+        efficiency=efficiency,
+    )
 
 
 def round_up_to_common_cores(value: float) -> int:
@@ -767,7 +923,6 @@ def configuration_recommendation(
     # 动态扩展指标会进入通用分析，但不会自动参与最低配置推导。
     cpu_p95 = percentile_95(data["cpu_percent"])
     cpu_peak = data["cpu_percent"].max()
-    memory_p95_gb = percentile_95(data["memory_mb"]) / 1024
     memory_peak_gb = data["memory_mb"].max() / 1024
     io_p95 = percentile_95(data["io"])
     thread_peak = data["threads"].max()
