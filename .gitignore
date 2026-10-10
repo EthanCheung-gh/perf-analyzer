@@ -9,3 +9,8 @@ env/
 docs/superpowers/
 .openbitfun/
 /.openbitfun/search/flashgrep-index/
+
+# collector output artifacts (real data, not repo content)
+data/collected_*.xlsx
+# openpyxl temp lock files
+.~*.xlsx
