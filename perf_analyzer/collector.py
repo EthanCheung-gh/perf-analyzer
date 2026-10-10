@@ -391,6 +391,45 @@ class Sampler:
         except Exception:
             return None
 
+    def _system_threads(self) -> int | None:
+        """整机口径：汇总全部进程的线程数（num_threads 在 /proc/<pid>/status 里，通常可读）。"""
+        threads = 0
+        try:
+            processes = self.psutil.process_iter(["num_threads"])
+        except Exception:
+            return None
+        for proc in processes:
+            try:
+                threads += int(proc.info.get("num_threads") or 0)
+            except Exception:
+                continue
+        return threads or None
+
+    def _system_handles(self) -> int | None:
+        """整机口径的句柄数：优先取系统级已分配文件句柄（Linux /proc/sys/fs/file-nr）。
+
+        拿不到系统级数据时，退化为累加可访问进程的 fd 数；全都不可访问才返回 None。
+        """
+        try:
+            fields = Path("/proc/sys/fs/file-nr").read_text(encoding="utf-8").split()
+            if fields:
+                return int(fields[0])
+        except Exception:
+            pass
+        total = 0
+        readable = False
+        try:
+            processes = self.psutil.process_iter()
+        except Exception:
+            return None
+        for proc in processes:
+            try:
+                total += int(proc.num_fds())
+                readable = True
+            except Exception:
+                continue
+        return total if readable else None
+
     @staticmethod
     def _rate(before: int | None, after: int | None, seconds: float) -> float | None:
         if before is None or after is None or after < before or seconds <= 0:
@@ -420,6 +459,7 @@ class Sampler:
         memory_mb = 0.0
         threads = 0
         handles: int | None = 0
+        handle_denied = False
         for proc in alive:
             try:
                 info = proc.memory_full_info()
@@ -436,12 +476,22 @@ class Sampler:
             try:
                 handles += int(proc.num_fds() if hasattr(proc, "num_fds") else proc.num_handles())
             except Exception:
-                handles = None
-                break
+                # 单个进程读不到 fd 不该中断整棵树的统计，标记后跳过
+                handle_denied = True
+                continue
+        if handle_denied:
+            handles = None
+
         if self.processes:
             row["内存占用（MB）"] = round(memory_mb, 2)
             row["线程"] = threads or None
             row["句柄"] = handles
+        else:
+            # 整机口径：内存取系统已用量，线程汇总全部进程，句柄取系统级已分配文件句柄
+            used_mb = self.psutil.virtual_memory().used / MB
+            row["内存占用（MB）"] = round(used_mb, 2)
+            row["线程"] = self._system_threads()
+            row["句柄"] = self._system_handles()
 
         total_mb = self.psutil.virtual_memory().total / MB
         row["系统总内存"] = round(total_mb, 2)

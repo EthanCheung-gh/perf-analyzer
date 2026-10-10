@@ -111,9 +111,9 @@ Output defaults to `data/collected_performance.xlsx`: the 1st sheet is "system i
 |---|---|---|
 | `时间戳` (timestamp) | Local clock | `YYYY-MM-DD HH:MM:SS`, local time |
 | `CPU%` | Process or machine | `--cpu-mode process` (default) = per-process share of **one core** (may exceed 100 on multi-thread); `--cpu-mode machine` = whole-machine utilization 0-100 |
-| `内存占用（MB）` / `内存占用百分比` | Process memory | `--memory-mode rss` (resident) or `uss` (unique) |
+| `内存占用（MB）` / `内存占用百分比` | Process memory or system used memory | `--memory-mode rss` (resident) or `uss` (unique); in machine mode the system used memory and its share |
 | `系统总内存` | Whole machine | In MB, used to derive the memory percentage |
-| `线程` / `句柄` | Process | Summed over the process tree; handles = open fds on Linux |
+| `线程` / `句柄` | Process tree or whole machine | Process mode sums the process tree (handles = open fds on Linux); machine mode sums threads of all processes and takes the system-wide allocated file handles (Linux `/proc/sys/fs/file-nr`) |
 | `io` | Disk IO rate | Read+write combined MB/s, unit explained by the acquisition convention |
 | `磁盘读(MB/s)` / `磁盘写(MB/s)` / `IOPS` | Process or machine | Per-process `/proc/<pid>/io` deltas when a process is targeted |
 | `网络上行/下行(KB/s)` | Whole-machine NIC | System-level deltas; cannot be attributed per process |
@@ -149,7 +149,7 @@ Snapshot keys are recognized through the same alias tables the page uses (`.json
 
 - **Sampling interval**: keep it identical to the real collection tool (typically 5-30 s). The shorter the interval, the more meaningful the "Raw data" page and timestamp diagnostics; below 1 s the per-process CPU% jitters noticeably.
 - **Scenario naming**: one sheet per scenario; a duplicate scenario name automatically gets a `-2` suffix and never overwrites the previous round (use `--overwrite-sheet` to replace it).
-- **Process trees**: use `--name` + `--children` for multi-process / multi-worker services; `--pid` is more stable for a single service, and a process restart will not leak into a same-named process.
+- **Process trees**: use `--name` + `--children` for multi-process / multi-worker services; `--pid` is more stable for a single service, and a process restart will not leak into a same-named process. If one process in the tree refuses fd access, the handles column is left empty (better empty than wrong) while the thread count is unaffected.
 - **Long runs**: `--duration 0` collects until Ctrl+C, with `--flush-samples` persisting periodically so an interruption does not lose data; if the target exits mid-run, empty rows are kept to preserve the timeline.
 - **Multi-machine / multi-batch**: write one file per run and upload them under different file names as "data sources" to drive version comparison and multi-batch comparison.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -56,27 +57,161 @@ def test_output_columns_are_unique_and_ordered():
     assert columns[len(FIXED_HEADERS):] == BUSINESS_HEADERS
 
 
-def test_describe_total_memory_uses_gb_unit():
-    """回归：系统内存展示值必须是 GB，而不是把 MB 数当 GB（曾出现 25292 GB）。"""
-    from perf_analyzer import collector
+def _fake_psutil(processes: list | None = None, **overrides):
+    """构造一个最小可用的假 psutil 模块，返回 (模块, 还原函数)。"""
+    import sys
+    import types
 
-    class FakeVM:
-        total = 24 * 1024**3  # 24 GB
+    fake = types.ModuleType("psutil")
+    fake.cpu_percent = lambda interval=None: 12.5
+    fake.virtual_memory = lambda: types.SimpleNamespace(total=24 * 1024**3, used=8 * 1024**3)
+    fake.disk_io_counters = lambda: types.SimpleNamespace(
+        read_bytes=0, write_bytes=0, read_count=0, write_count=0
+    )
+    fake.net_io_counters = lambda: types.SimpleNamespace(bytes_sent=0, bytes_recv=0)
+    fake.cpu_stats = lambda: types.SimpleNamespace(ctx_switches=1000)
+    fake.process_iter = lambda attrs=None: list(processes or [])
+    for key, value in overrides.items():
+        setattr(fake, key, value)
 
-    original = collector.psutil_dummy if hasattr(collector, "psutil_dummy") else None
-    try:
-        import sys
-        import types
+    original = sys.modules.get("psutil")
+    sys.modules["psutil"] = fake
 
-        fake = types.ModuleType("psutil")
-        fake.virtual_memory = lambda: FakeVM
-        sys.modules["psutil"] = fake
-        value = collector.describe_total_memory()
-    finally:
+    def restore():
         if original is None:
             sys.modules.pop("psutil", None)
         else:  # pragma: no cover
             sys.modules["psutil"] = original
+
+    return fake, restore
+
+
+def test_system_mode_fills_threads_and_handles():
+    """回归：整机口径下线程/句柄不能再是空列（二者都是核心指标）。"""
+    from perf_analyzer import collector
+
+    class FakeProc:
+        def __init__(self, threads, fds):
+            self.info = {"num_threads": threads}
+            self._fds = fds
+
+        def num_fds(self):
+            return self._fds
+
+    fake, restore = _fake_psutil(processes=[FakeProc(10, 100), FakeProc(5, 50)])
+    try:
+        row = collector.Sampler(fake, [], interval=1.0).sample()
+    finally:
+        restore()
+
+    assert row["线程"] == 15
+    assert row["进程数"] == 1
+
+
+def test_system_mode_handles_from_file_nr(tmp_path, monkeypatch):
+    """整机句柄优先读 /proc/sys/fs/file-nr（系统级已分配文件句柄）。"""
+    from perf_analyzer import collector
+
+    file_nr = tmp_path / "file-nr"
+    file_nr.write_text("12345\t0\t0\n", encoding="utf-8")
+
+    class FakeProc:
+        info = {"num_threads": 7}
+
+        def num_fds(self):
+            raise PermissionError("denied")
+
+    fake, restore = _fake_psutil(processes=[FakeProc()])
+    original_read = collector.Path.read_text
+
+    def fake_read_text(self, *args, **kwargs):
+        if str(self) == "/proc/sys/fs/file-nr":
+            return file_nr.read_text(encoding="utf-8")
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(collector.Path, "read_text", fake_read_text)
+    try:
+        sampler = collector.Sampler(fake, [], interval=1.0)
+        handles = sampler._system_handles()
+        row = sampler.sample()
+    finally:
+        restore()
+
+    assert handles == 12345
+    assert row["句柄"] == 12345
+
+
+def test_system_mode_memory_uses_system_used():
+    """整机口径下内存占用取系统已用量，内存占比随之可算。"""
+    from perf_analyzer import collector
+
+    fake, restore = _fake_psutil(virtual_memory=lambda: types.SimpleNamespace(total=16 * 1024**3, used=4 * 1024**3))
+    try:
+        row = collector.Sampler(fake, [], interval=1.0).sample()
+    finally:
+        restore()
+
+    assert row["内存占用（MB）"] == 4096.0
+    assert row["系统总内存"] == 16384.0
+    assert abs(row["内存占用百分比"] - 25.0) < 1e-6
+
+
+def test_process_mode_handle_denial_does_not_truncate_threads():
+    """进程树里某个进程读不到 fd，不该让整棵树的线程数也被截断。"""
+    from perf_analyzer import collector
+
+    class Denied:
+        pid = 1
+        name = "root-proc"
+
+        def is_running(self):
+            return True
+
+        def memory_full_info(self):
+            return types.SimpleNamespace(rss=100 * 1024 * 1024, uss=50 * 1024 * 1024)
+
+        def num_threads(self):
+            return 20
+
+        def num_fds(self):
+            raise PermissionError("denied")
+
+    class Ok:
+        pid = 2
+        name = "app"
+
+        def is_running(self):
+            return True
+
+        def memory_full_info(self):
+            return types.SimpleNamespace(rss=200 * 1024 * 1024, uss=100 * 1024 * 1024)
+
+        def num_threads(self):
+            return 5
+
+        def num_fds(self):
+            return 42
+
+    fake, restore = _fake_psutil(processes=[Denied(), Ok()])
+    try:
+        row = collector.Sampler(fake, [Denied(), Ok()], interval=1.0).sample()
+    finally:
+        restore()
+
+    assert row["线程"] == 25
+    assert row["句柄"] is None  # 有进程读不到 fd，宁缺勿错
+    assert row["进程数"] == 2
+
+
+def test_describe_total_memory_uses_gb_unit():
+    """回归：系统内存展示值必须是 GB，而不是把 MB 数当 GB（曾出现 25292 GB）。"""
+    from perf_analyzer import collector
+
+    _, restore = _fake_psutil()
+    try:
+        value = collector.describe_total_memory()
+    finally:
+        restore()
     assert value == "24.0 GB"
 
 
