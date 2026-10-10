@@ -12,6 +12,7 @@
 
 - [快速开始](#快速开始)
 - [界面预览](#界面预览)
+- [真实数据采集](#真实数据采集)
 - [适用场景](#适用场景)
 - [Excel 数据结构](#excel-数据结构)
 - [分析模式](#分析模式)
@@ -74,6 +75,80 @@ python3 -m pytest tests/ -q
 **报告**：报告章节可勾选（共 12 个章节），一键导出 Markdown / HTML / Word / PDF / ZIP。
 
 ![报告页面：报告章节配置与 Markdown、HTML 等格式下载入口](png/06-报告导出.png)
+
+## 真实数据采集
+
+页面只负责分析；采集侧用 `collect_performance_data.py` 把真实采样写成本工具可直接上传的 Excel（结构见「Excel 数据结构」）。
+
+### 快速开始
+
+```bash
+# 依赖（requirements.txt 已含）
+python3 -m pip install psutil
+
+# 1. 采整机 10 分钟，每 5 秒一个点
+python3 collect_performance_data.py --system --interval 5 --duration 10
+
+# 2. 采指定进程（连同子进程一起聚合）
+python3 collect_performance_data.py --name java --children --scenario "压测-重载"
+
+# 3. 同一份文件里采多个场景，供横向对比
+python3 collect_performance_data.py --name MyApp --scenario "轻载" --output data/run1.xlsx
+python3 collect_performance_data.py --name MyApp --scenario "重载" --append --output data/run1.xlsx
+
+# 4. 采到 Ctrl+C 为止（--duration 0），每 200 行自动落盘
+python3 collect_performance_data.py --pid 12345 --duration 0 --flush-samples 200
+```
+
+输出默认落在 `data/collected_performance.xlsx`：第 1 个 sheet 是「系统信息」（应用名称/版本/设备/OS/CPU/内存/采样间隔/采集目标），之后每个 `--scenario` 一个 sheet，sheet 名即场景名，直接上传即可。
+
+### 采集列与口径
+
+| 列 | 来源 | 口径说明 |
+|---|---|---|
+| `时间戳` | 本机时钟 | `YYYY-MM-DD HH:MM:SS` 本地时间 |
+| `CPU%` | 进程或整机 | `--cpu-mode process`（默认）= 单进程相对**单核**百分比，多线程可超 100；`--cpu-mode machine` = 整机总利用率 0-100 |
+| `内存占用（MB）` / `内存占用百分比` | 进程内存 | `--memory-mode rss`（常驻）或 `uss`（独占） |
+| `系统总内存` | 整机 | 单位 MB，用于补算内存占比 |
+| `线程` / `句柄` | 进程 | 进程树求和；句柄在 Linux 取 fd 数 |
+| `io` | 磁盘 IO 速率 | 读+写合计 MB/s，单位按采集口径解释 |
+| `磁盘读(MB/s)` / `磁盘写(MB/s)` / `IOPS` | 进程或整机 | 目标为进程时取 `/proc/<pid>/io` 增量 |
+| `网络上行/下行(KB/s)` | 整机网卡 | 系统级增量，无法细分到进程 |
+| `进程数` / `上下文切换/秒` | 进程树 / 整机 | 作为动态扩展指标参与趋势与异常分析 |
+
+> **口径提醒**：「配置建议」页的 CPU 核数估算公式要求 `CPU%` 是整机总利用率（0-100）。如果默认按进程口径采集，需要另采一份 `--cpu-mode machine` 的数据再套公式，否则会把单核算成整机、高估核数需求。
+
+### 业务字段挂接（QPS / 并发 / 响应时间）
+
+资源类字段能从进程外部采到，吞吐和体验字段不行。让被测系统自己周期性输出一个 JSON / JSONL 快照，采集时用 `--metrics-file` 挂上即可按标准字段名并入表：
+
+```bash
+python3 collect_performance_data.py --name MyApp --metrics-file /tmp/app_metrics.json
+```
+
+快照键名按页面同一套别名表识别（`.jsonl` 取最后一行，`.json` 取对象本身或数组最后一个元素）：
+
+```json
+{
+  "qps": 120.5,
+  "concurrency": 80,
+  "latency_ms": 235.8,
+  "requests": 1000,
+  "failed_requests": 3,
+  "retry_count": 1,
+  "heap_mb": 512
+}
+```
+
+`qps` / `请求数` / `并发数` / `响应时间(ms)` / `错误数` / `FPS` / `GC*` / `网络*` / `磁盘*` 等都支持中英文与 snake_case 写法；命中不了的键直接忽略，不影响采集。
+
+### 采集建议
+
+- **采样间隔**：与真实采集工具保持一致（常见 5-30 秒）。间隔越短，「采样间隔」页和时间戳诊断越有意义；短于 1 秒时进程 CPU% 抖动会变大。
+- **场景命名**：一个 sheet 一个场景；同名场景默认自动加 `-2` 后缀，不会覆盖上一轮数据（要覆盖加 `--overwrite-sheet`）。
+- **进程树**：多进程/多 worker 服务用 `--name` + `--children` 聚合；单机单服务用 `--pid` 更稳，进程重启不会串到同名进程上。
+- **长时间采集**：`--duration 0` 采到 Ctrl+C，配合 `--flush-samples` 定期落盘，避免中断丢数据；目标进程中途退出会保留空值行以维持时间轴。
+- **多机/多批次**：每次采集输出一个文件，用不同文件名作为「数据源」上传，即可走版本对比与多批次对比。
 
 ## 适用场景
 
@@ -333,17 +408,19 @@ CPU原始需求 = 测试机逻辑核数 × CPU P95 / 目标CPU利用率上限
 | 文件/目录 | 说明 |
 |---|---|
 | `app.py` | Streamlit 主页面（入口、侧边栏、tab 编排） |
-| `generate_sample_data.py` | 示例 Excel 生成脚本 |
-| `perf_analyzer/` | 核心包：数据读取（`io.py`/`data_loader.py`）、分析计算（`analysis.py`/`alerts.py`/`stats.py`/`quality.py`）、决策规则（`rules.py`）、显著性检验（`significance.py`）、阶段检测（`phases.py`）、配置（`config.py`）、视图（`views_*.py`）、报告与导出（`report.py`/`export*.py`） |
-| `tests/` | pytest 测试：分析、告警、配置、显著性、阶段检测、分钟归一化 |
+| `generate_sample_data.py` | 示例 Excel 生成脚本（模拟数据，仅供调试） |
+| `collect_performance_data.py` | 真实数据采集 CLI 入口（psutil），产出可直接上传的 Excel |
+| `perf_analyzer/` | 核心包：数据读取（`io.py`/`data_loader.py`）、真实采集（`collector.py`）、分析计算（`analysis.py`/`alerts.py`/`stats.py`/`quality.py`）、决策规则（`rules.py`）、显著性检验（`significance.py`）、阶段检测（`phases.py`）、配置（`config.py`）、视图（`views_*.py`）、报告与导出（`report.py`/`export*.py`） |
+| `tests/` | pytest 测试：分析、告警、配置、显著性、阶段检测、分钟归一化、采集器回读 |
 | `config/` | 可导入的分析配置示例（应用性能 / 通用时序） |
-| `data/` | 示例 Excel 数据 |
+| `data/` | 示例 Excel 数据与采集输出（默认 `data/collected_performance.xlsx`） |
 | `docs/` | 分析方法说明、代码地图、superpowers 设计与实施文档 |
 | `png/` | 本 README 使用到的界面截图 |
 
 开发约定：
 
 - 新增页面：在 `perf_analyzer/views_*.py` 新增 `render_*()`，由 `app.py` 编排到 tab。
+- 新增采集列：改 `perf_analyzer/collector.py` 的 `FIXED_HEADERS` / `HEADER_ALIASES`，并同步 `tests/test_collector.py` 与「真实数据采集」章节的口径表。
 - 新增图表：统一走 `ui_helpers.render_plotly_chart()` 展示与导出。
 - 新增指标：扩展 `constants.py` 的标准指标和字段别名。
 - 新增配置项：同步更新 `config.py`、`ui_state.py`、示例 JSON 和本 README。

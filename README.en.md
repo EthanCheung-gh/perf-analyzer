@@ -12,6 +12,7 @@ A Streamlit page for analyzing application resource consumption Excel data: cros
 
 - [Quick Start](#quick-start)
 - [UI Preview](#ui-preview)
+- [Real Data Collection](#real-data-collection)
 - [Use Cases](#use-cases)
 - [Excel Data Structure](#excel-data-structure)
 - [Analysis Modes](#analysis-modes)
@@ -28,6 +29,9 @@ A Streamlit page for analyzing application resource consumption Excel data: cros
 ```bash
 # 1. Install dependencies
 python3 -m pip install -r requirements.txt
+
+# 1.5 Collect real data (optional; sample data is bundled; the collector needs psutil)
+# python3 collect_performance_data.py --system --interval 5 --duration 10
 
 # 2. Generate sample data for debugging (optional; skip if data/sample_resource_consumption.xlsx already exists)
 python3 generate_sample_data.py
@@ -74,6 +78,80 @@ All screenshots below are taken from the sample data (`data/sample_resource_cons
 **Report**: sections are selectable (12 sections in total) and exportable as Markdown / HTML / Word / PDF / ZIP in one click.
 
 ![Report page: report section configuration and Markdown, HTML download entries](png/06-报告导出.png)
+
+## Real Data Collection
+
+The page only analyzes; the acquisition side uses `collect_performance_data.py` to write real samples into an Excel workbook this tool can upload directly (structure: see "Excel Data Structure").
+
+### Quick start
+
+```bash
+# dependency (already in requirements.txt)
+python3 -m pip install psutil
+
+# 1. Whole machine for 10 minutes, one point every 5 seconds
+python3 collect_performance_data.py --system --interval 5 --duration 10
+
+# 2. A specific process (children aggregated too)
+python3 collect_performance_data.py --name java --children --scenario "load-heavy"
+
+# 3. Several scenarios into one workbook for cross-scenario comparison
+python3 collect_performance_data.py --name MyApp --scenario "light" --output data/run1.xlsx
+python3 collect_performance_data.py --name MyApp --scenario "heavy" --append --output data/run1.xlsx
+
+# 4. Collect until Ctrl+C (--duration 0), autosave every 200 rows
+python3 collect_performance_data.py --pid 12345 --duration 0 --flush-samples 200
+```
+
+Output defaults to `data/collected_performance.xlsx`: the 1st sheet is "system information" (app name / version / device / OS / CPU / memory / sampling interval / target), then one sheet per `--scenario`, and the sheet name is the scenario name — upload it as is.
+
+### Collected columns and conventions
+
+| Column | Source | Convention |
+|---|---|---|
+| `时间戳` (timestamp) | Local clock | `YYYY-MM-DD HH:MM:SS`, local time |
+| `CPU%` | Process or machine | `--cpu-mode process` (default) = per-process share of **one core** (may exceed 100 on multi-thread); `--cpu-mode machine` = whole-machine utilization 0-100 |
+| `内存占用（MB）` / `内存占用百分比` | Process memory | `--memory-mode rss` (resident) or `uss` (unique) |
+| `系统总内存` | Whole machine | In MB, used to derive the memory percentage |
+| `线程` / `句柄` | Process | Summed over the process tree; handles = open fds on Linux |
+| `io` | Disk IO rate | Read+write combined MB/s, unit explained by the acquisition convention |
+| `磁盘读(MB/s)` / `磁盘写(MB/s)` / `IOPS` | Process or machine | Per-process `/proc/<pid>/io` deltas when a process is targeted |
+| `网络上行/下行(KB/s)` | Whole-machine NIC | System-level deltas; cannot be attributed per process |
+| `进程数` / `上下文切换/秒` | Process tree / machine | Join trend and alert analysis as dynamic metrics |
+
+> **Convention warning**: the CPU core estimation formula on the "Configuration recommendation" page requires `CPU%` to be whole-machine utilization (0-100). If you collect with the default per-process convention, collect a second run with `--cpu-mode machine` before applying the formula, otherwise a single-core share gets read as a whole-machine share and core demand is overestimated.
+
+### Business fields (QPS / concurrency / response time)
+
+Resource fields can be sampled externally; throughput and experience fields cannot. Have the system under test periodically emit a JSON / JSONL snapshot, then attach it during collection with `--metrics-file` and it is merged in under the standard field names:
+
+```bash
+python3 collect_performance_data.py --name MyApp --metrics-file /tmp/app_metrics.json
+```
+
+Snapshot keys are recognized through the same alias tables the page uses (`.jsonl` takes the last line, `.json` takes the object itself or the last array element):
+
+```json
+{
+  "qps": 120.5,
+  "concurrency": 80,
+  "latency_ms": 235.8,
+  "requests": 1000,
+  "failed_requests": 3,
+  "retry_count": 1,
+  "heap_mb": 512
+}
+```
+
+`qps`, `请求数` (request count), `并发数` (concurrency), `响应时间(ms)`, `错误数`, `FPS`, `GC*`, network and disk fields all accept Chinese, English and snake_case spellings; unmatched keys are ignored without affecting collection.
+
+### Collection advice
+
+- **Sampling interval**: keep it identical to the real collection tool (typically 5-30 s). The shorter the interval, the more meaningful the "Raw data" page and timestamp diagnostics; below 1 s the per-process CPU% jitters noticeably.
+- **Scenario naming**: one sheet per scenario; a duplicate scenario name automatically gets a `-2` suffix and never overwrites the previous round (use `--overwrite-sheet` to replace it).
+- **Process trees**: use `--name` + `--children` for multi-process / multi-worker services; `--pid` is more stable for a single service, and a process restart will not leak into a same-named process.
+- **Long runs**: `--duration 0` collects until Ctrl+C, with `--flush-samples` persisting periodically so an interruption does not lose data; if the target exits mid-run, empty rows are kept to preserve the timeline.
+- **Multi-machine / multi-batch**: write one file per run and upload them under different file names as "data sources" to drive version comparison and multi-batch comparison.
 
 ## Use Cases
 
@@ -333,9 +411,10 @@ The script data is simulated and is intended only for page debugging and feature
 | File/directory | Notes |
 |---|---|
 | `app.py` | Streamlit main page (entry point, sidebar, tab orchestration) |
-| `generate_sample_data.py` | Sample Excel generator |
-| `perf_analyzer/` | Core package: data reading (`io.py`/`data_loader.py`), analysis computation (`analysis.py`/`alerts.py`/`stats.py`/`quality.py`), decision rules (`rules.py`), significance testing (`significance.py`), phase detection (`phases.py`), configuration (`config.py`), views (`views_*.py`), reporting and export (`report.py`/`export*.py`) |
-| `tests/` | pytest suite: analysis, alerts, config, significance, phase detection, minute normalization |
+| `generate_sample_data.py` | Sample Excel generator (simulated data, debugging only) |
+| `collect_performance_data.py` | Real-data collection CLI entry (psutil); emits an Excel workbook ready to upload |
+| `perf_analyzer/` | Core package: data reading (`io.py`/`data_loader.py`), real collection (`collector.py`), analysis computation (`analysis.py`/`alerts.py`/`stats.py`/`quality.py`), decision rules (`rules.py`), significance testing (`significance.py`), phase detection (`phases.py`), configuration (`config.py`), views (`views_*.py`), reporting and export (`report.py`/`export*.py`) |
+| `tests/` | pytest suite: analysis, alerts, config, significance, phase detection, minute normalization, collector round-trip |
 | `config/` | Importable example analysis configs (application performance / generic time series) |
 | `data/` | Sample Excel data |
 | `docs/` | Analysis methodology, code map, superpowers design and implementation docs |
@@ -344,6 +423,7 @@ The script data is simulated and is intended only for page debugging and feature
 Development conventions:
 
 - New page: add a `render_*()` function in `perf_analyzer/views_*.py` and wire it into a tab in `app.py`.
+- New collected column: edit `FIXED_HEADERS` / `HEADER_ALIASES` in `perf_analyzer/collector.py`, and sync `tests/test_collector.py` plus the convention table in "Real Data Collection".
 - New chart: always go through `ui_helpers.render_plotly_chart()` for display and export.
 - New metric: extend the standard metrics and field aliases in `constants.py`.
 - New config item: update `config.py`, `ui_state.py`, the example JSON and this README together.
