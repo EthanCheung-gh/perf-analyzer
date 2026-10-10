@@ -7,3 +7,5 @@ __pycache__/
 venv/
 env/
 docs/superpowers/
+.openbitfun/
+/.openbitfun/search/flashgrep-index/

@@ -150,6 +150,10 @@ python3 collect_performance_data.py --name MyApp --metrics-file /tmp/app_metrics
 - **长时间采集**：`--duration 0` 采到 Ctrl+C，配合 `--flush-samples` 定期落盘，避免中断丢数据；目标进程中途退出会保留空值行以维持时间轴。
 - **多机/多批次**：每次采集输出一个文件，用不同文件名作为「数据源」上传，即可走版本对比与多批次对比。
 
+### 适配性验证
+
+采集链路有端到端测试兜底（`tests/test_collector.py`）：写出的 Excel 经页面自身的 `read_single_workbook()` 装载后，指标全部识别（核心 6 项 + 动态扩展指标 + 业务列），并继续喂进 `summarize()` / `leak_analysis()` / `alert_continuity_summary()` / `configuration_recommendation()` / `resource_efficiency_analysis()` 等真实分析函数。也就是说「能映射到表头」只是及格线，「能出概览统计、泄漏判定、配置建议和效率分析」才是验收标准。
+
 ## 适用场景
 
 - 轻载、重载、空闲、冷启动、长时间运行等场景的资源对比

@@ -153,6 +153,10 @@ Snapshot keys are recognized through the same alias tables the page uses (`.json
 - **Long runs**: `--duration 0` collects until Ctrl+C, with `--flush-samples` persisting periodically so an interruption does not lose data; if the target exits mid-run, empty rows are kept to preserve the timeline.
 - **Multi-machine / multi-batch**: write one file per run and upload them under different file names as "data sources" to drive version comparison and multi-batch comparison.
 
+### Adaptation verification
+
+The collection pipeline is guarded by an end-to-end test (`tests/test_collector.py`): the workbook it writes is loaded by the page's own `read_single_workbook()`, all metrics are recognized (6 core + dynamic + business columns), and the data then flows into the real analysis functions `summarize()`, `leak_analysis()`, `alert_continuity_summary()`, `configuration_recommendation()` and `resource_efficiency_analysis()`. In other words "maps to the right headers" is only the passing grade; "produces overview statistics, leak verdicts, configuration recommendations and efficiency analysis" is the acceptance criterion.
+
 ## Use Cases
 
 - Resource comparison across light load, heavy load, idle, cold start, long-running and other scenarios

@@ -226,6 +226,103 @@ def pd_sheetnames(path: Path):
     return load_workbook(path, read_only=True).sheetnames
 
 
+def _collected_frames(scenes: int = 2, points: int = 60) -> list[dict]:
+    """构造两个场景的采集数据：资源列齐全 + 业务列来自 metrics-file。"""
+    frames = []
+    for scene_index in range(scenes):
+        load = 30 + scene_index * 25
+        rows = []
+        for index in range(points):
+            cpu = load + 6 * ((index % 7) - 3)
+            memory = 700 + scene_index * 200 + index * 2.5  # 有明显增长趋势
+            rows.append(
+                {
+                    "时间戳": f"2026-06-13 1{scene_index}:{index // 6:02d}:{index % 6 * 10:02d}",
+                    "CPU%": round(cpu, 2),
+                    "内存占用（MB）": round(memory, 2),
+                    "系统总内存": 16384,
+                    "内存占用百分比": round(memory / 16384 * 100, 4),
+                    "线程": 40 + scene_index * 10,
+                    "句柄": 800 + index,
+                    "io": round(1.0 + index / 20, 3),
+                    "磁盘读(MB/s)": round(0.4 + index / 40, 3),
+                    "磁盘写(MB/s)": round(0.2 + index / 60, 3),
+                    "IOPS": 40 + index,
+                    "网络上行(KB/s)": 12.5,
+                    "网络下行(KB/s)": 88.5,
+                    "进程数": 1,
+                    "上下文切换/秒": 1500 + index * 10,
+                    "QPS": 120 - scene_index * 20,
+                    "并发数": 80 - scene_index * 10,
+                    "响应时间(ms)": round(180 + cpu, 1),
+                    "请求数": 1200,
+                    "失败请求数": index % 5,
+                    "重试次数": index % 3,
+                }
+            )
+        frames.append((f"采集场景{scene_index + 1}", build_frame(rows, ["QPS", "并发数", "响应时间(ms)", "请求数", "失败请求数", "重试次数"])))
+    return frames
+
+
+def test_collected_data_flows_through_real_analysis(tmp_path):
+    """采集器产出的数据必须能直接喂进页面自己的分析链路，而不只是列名对得上。"""
+    from perf_analyzer.analysis import (
+        alert_continuity_summary,
+        configuration_recommendation,
+        leak_analysis,
+        resource_efficiency_analysis,
+        summarize,
+    )
+    from perf_analyzer.constants import PERFORMANCE_MODE
+    from perf_analyzer.io import read_single_workbook
+    from perf_analyzer.metrics import discover_metrics
+
+    path = tmp_path / "collected.xlsx"
+    info = build_system_info("DemoApp", "1.0.0", "Lab PC", 5.0, "MyApp（进程数 1）")
+    for name, frame in _collected_frames():
+        write_workbook(path, info, name, frame)
+
+    _, data = read_single_workbook("采集冒烟", None, (), PERFORMANCE_MODE, path)
+    assert len(data) == 120
+    assert set(data["scene"]) == {"采集场景1", "采集场景2"}
+
+    metrics = discover_metrics(data)
+    keys = {metric.key for metric in metrics}
+    # 采集器写的固定列 + 业务列都应该被识别成指标
+    for key in ("cpu_percent", "memory_mb", "threads", "handles", "io", "qps", "concurrency", "response_time_ms"):
+        assert key in keys, key
+    thresholds = {metric.key: metric.default_threshold for metric in metrics}
+
+    summary = summarize(data, thresholds, metrics)
+    assert not summary.empty and len(summary) == 2
+    # 列名按指标 label 生成：CPU→CPU均值/CPUP95，内存→内存占用均值/内存占用峰值
+    assert "CPU均值" in summary.columns
+    assert "CPUP95" in summary.columns
+    assert "内存占用峰值" in summary.columns
+    assert summary["样本数"].sum() == 120
+
+    leaks = leak_analysis(data, 2.0)
+    assert set(leaks["场景"]) == {"采集场景1", "采集场景2"}
+    assert set(leaks["判断"]) <= {"疑似泄漏", "轻微增长", "无明显增长", "数据不足"}
+    assert (leaks["内存斜率(MB/分钟)"] > 0).all()
+
+    alerts = alert_continuity_summary(data, thresholds, metrics)
+    assert not alerts.empty
+    assert {"指标", "超阈次数", "最大连续超阈"} <= set(alerts.columns)
+
+    recommendation, notes = configuration_recommendation(
+        data, test_cpu_cores=8, target_cpu_utilization=70.0, minimum_cpu_cores=2,
+        system_reserved_memory_gb=2.0, minimum_memory_gb=4, minimum_free_disk_gb=10,
+        recommendation_factor=1.5, slope_threshold=2.0,
+    )
+    assert list(recommendation["配置档位"]) == ["最低可运行", "推荐配置"]
+    assert recommendation["CPU核数"].iloc[0] >= 2
+    assert notes and any("CPU估算" in note for note in notes)
+
+    efficiency = resource_efficiency_analysis(data)
+    assert not efficiency.empty and len(efficiency) == 2
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [
