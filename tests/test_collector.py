@@ -56,6 +56,30 @@ def test_output_columns_are_unique_and_ordered():
     assert columns[len(FIXED_HEADERS):] == BUSINESS_HEADERS
 
 
+def test_describe_total_memory_uses_gb_unit():
+    """回归：系统内存展示值必须是 GB，而不是把 MB 数当 GB（曾出现 25292 GB）。"""
+    from perf_analyzer import collector
+
+    class FakeVM:
+        total = 24 * 1024**3  # 24 GB
+
+    original = collector.psutil_dummy if hasattr(collector, "psutil_dummy") else None
+    try:
+        import sys
+        import types
+
+        fake = types.ModuleType("psutil")
+        fake.virtual_memory = lambda: FakeVM
+        sys.modules["psutil"] = fake
+        value = collector.describe_total_memory()
+    finally:
+        if original is None:
+            sys.modules.pop("psutil", None)
+        else:  # pragma: no cover
+            sys.modules["psutil"] = original
+    assert value == "24.0 GB"
+
+
 def test_build_system_info_rows():
     info = build_system_info("DemoApp", "1.0.0", "Lab PC", 5.0, "java（进程数 2）", extra={"备注": "压测"})
     assert list(info.columns) == ["项目", "值"]

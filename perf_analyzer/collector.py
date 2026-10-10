@@ -270,24 +270,28 @@ def describe_os() -> str:
 
 
 def describe_cpu() -> str:
+    """整机 CPU 的展示值，例如「8C/16T AMD Ryzen 7 255」。"""
     try:
         import psutil
 
         logical = psutil.cpu_count(logical=True)
         physical = psutil.cpu_count(logical=False)
         model = platform_cpu_model()
-        parts = [f"{logical}C/{logical}T" if not physical else f"{physical}C/{logical}T", model]
-        return " ".join(part for part in parts if part).strip()
+        cores = f"{physical}C/{logical}T" if physical else f"{logical}C/{logical}T"
+        # 型号串可能带频率/显卡尾巴，取前两段即可
+        short_model = " ".join(model.split()[:2]) if model else ""
+        return " ".join(part for part in (cores, short_model) if part).strip()
     except Exception:  # pragma: no cover - 采集环境异常不该阻塞写表
         return "-"
 
 
 def describe_total_memory() -> str:
+    """整机内存的展示值：psutil.virtual_memory().total 是字节，按 GB 显示。"""
     try:
         import psutil
 
         total = psutil.virtual_memory().total
-        return f"{total / MB:.1f} GB"
+        return f"{total / 1024**3:.1f} GB"
     except Exception:  # pragma: no cover
         return "-"
 
